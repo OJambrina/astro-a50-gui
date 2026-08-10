@@ -16,5 +16,5 @@ against PyPI and opens an issue when upstream moves ahead.
 """
 
 _VENDORED_VERSIONS = {
-    "eh_fifty": "0.3.0",
+    "eh_fifty": "0.4.0",
 }
