@@ -10,9 +10,10 @@ from pathlib import Path
 from unittest import mock
 
 import i18n
-import raw_request
 import templates
+from base_info_dialog import format_base_info
 from eq_widget import EqTemplatesWidget
+from vendor.eh_fifty import DeviceInfo, FirmwareVersion
 
 
 class BuiltinTemplatesTest(unittest.TestCase):
@@ -87,19 +88,22 @@ class UserTemplatesIOTest(unittest.TestCase):
         self.assertEqual(templates._load_user_templates(), {})
 
 
-class HelpersTest(unittest.TestCase):
-    def test_bcd_decode(self):
-        self.assertEqual(raw_request._bcd(0x00), 0)
-        self.assertEqual(raw_request._bcd(0x12), 12)
-        self.assertEqual(raw_request._bcd(0x99), 99)
-
-    def test_decode_datetime(self):
-        # 2026-05-17 14:30:00 → LE year=0x07EA, BCD 05 17 14 30 00
-        buf = bytes([0xEA, 0x07, 0x05, 0x17, 0x14, 0x30, 0x00])
-        self.assertEqual(raw_request._decode_datetime(buf), "2026-05-17 14:30:00")
-
-    def test_decode_datetime_too_short(self):
-        self.assertEqual(raw_request._decode_datetime(b"\x00\x00"), "?")
+class BaseInfoDialogTest(unittest.TestCase):
+    def test_format_base_info(self):
+        lines = format_base_info(
+            DeviceInfo(vendor_id=0x9886, product_id=0x002C),
+            FirmwareVersion(major=1, minor=2),
+            FirmwareVersion(major=3, minor=4),
+            [("0x03", b"\x01\x02"), ("0x83(01)", b"\xaa")],
+        )
+        joined = "\n".join(lines)
+        self.assertIn("9886:002c", joined)
+        self.assertIn("1.2", joined)
+        self.assertIn("3.4", joined)
+        self.assertIn("0x03:", joined)
+        self.assertIn("0102", joined)
+        self.assertIn("0x83(01):", joined)
+        self.assertIn("aa", joined)
 
 
 class I18nTest(unittest.TestCase):

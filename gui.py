@@ -245,15 +245,20 @@ class A50Window(QMainWindow):
     def _show_base_info(self):
         try:
             with self._device_lock:
-                dev_info = _raw_request(self.device, _OP_DEVICE_INFO)
-                fw_info = _raw_request(self.device, _OP_FIRMWARE_INFO, b"\x01")
-                base_minor = _raw_request(self.device, _OP_BASE_FW_MINOR)
-                hs_major = _raw_request(self.device, _OP_HEADSET_FW_MAJOR, b"\x0a")
-                hs_minor = _raw_request(self.device, _OP_HEADSET_FW_MINOR, b"\x0a")
+                dev_info = self.device.get_device_info()
+                base_fw = self.device.get_base_firmware_version()
+                headset_fw = self.device.get_headset_firmware_version()
+                raw = [
+                    ("0x03", _raw_request(self.device, _OP_DEVICE_INFO)),
+                    ("0x83(01)", _raw_request(self.device, _OP_FIRMWARE_INFO, b"\x01")),
+                    ("0x55", _raw_request(self.device, _OP_BASE_FW_MINOR)),
+                    ("0xda(0a)", _raw_request(self.device, _OP_HEADSET_FW_MAJOR, b"\x0a")),
+                    ("0xd6(0a)", _raw_request(self.device, _OP_HEADSET_FW_MINOR, b"\x0a")),
+                ]
         except Exception as e:
             QMessageBox.warning(self, t("err_title"), t("err_base_info", error=e))
             return
-        lines = format_base_info(dev_info, fw_info, base_minor, hs_major, hs_minor)
+        lines = format_base_info(dev_info, base_fw, headset_fw, raw)
         QMessageBox.information(self, t("act_base_info"), "<br>".join(lines))
 
     def _install_menu_entry(self):

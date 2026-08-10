@@ -1,11 +1,10 @@
-"""Raw HID helpers for opcodes that aren't in eh_fifty's public API.
+"""Raw HID helper for the base info dialog's diagnostic dump.
 
-These opcodes were observed via USB sniff of Astro Command Center on Windows.
-Version format used by ACC: "<major u32 LE>.<minor u8>"
-  * Base firmware major: bytes [21:25] of GET_DEVICE_INFO response
-  * Base firmware minor: GET_BASE_FW_MINOR response (1 byte)
-  * Headset firmware major: GET_HEADSET_FW_MAJOR response (4 bytes LE)
-  * Headset firmware minor: GET_HEADSET_FW_MINOR (arg 0x0a) response (1 byte)
+Since eh_fifty 0.4.0, device info and firmware versions are available as
+typed calls (get_device_info / get_base_firmware_version /
+get_headset_firmware_version). This module remains to dump the raw
+response payloads shown in the dialog — including opcode 0x83 (firmware
+info), which has no public wrapper.
 """
 from vendor.eh_fifty import Device
 
@@ -31,16 +30,3 @@ def _raw_request(device: Device, opcode: int, payload: bytes = b"") -> bytes:
         raise ValueError(f"unexpected response: {resp.hex()}")
     length = min(resp[2], len(resp) - 3)
     return resp[3:3 + length]
-
-
-def _bcd(b: int) -> int:
-    return (b >> 4) * 10 + (b & 0xF)
-
-
-def _decode_datetime(buf: bytes) -> str:
-    """Decode an 8-byte timestamp: u16 LE year + BCD month/day/h/m/s + pad."""
-    if len(buf) < 7:
-        return "?"
-    year = int.from_bytes(buf[0:2], "little")
-    return (f"{year:04d}-{_bcd(buf[2]):02d}-{_bcd(buf[3]):02d} "
-            f"{_bcd(buf[4]):02d}:{_bcd(buf[5]):02d}:{_bcd(buf[6]):02d}")
