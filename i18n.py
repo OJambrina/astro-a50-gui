@@ -3,7 +3,6 @@ import os
 
 from PyQt6.QtCore import QLocale
 
-
 TRANSLATIONS = {
     "fr": {
         "window_title": "Astro A50 — Configuration",

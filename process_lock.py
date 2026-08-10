@@ -6,7 +6,6 @@ import time
 from contextlib import suppress
 from pathlib import Path
 
-
 PROCESS_NAME = "astro-a50-gui"
 PID_FILE = Path(os.environ.get("XDG_RUNTIME_DIR") or "/tmp") / f"{PROCESS_NAME}.pid"
 

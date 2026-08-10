@@ -9,7 +9,6 @@ import json
 import os
 from pathlib import Path
 
-
 _EQ_TEMPLATES: dict[str, dict] = {
     "A50 MOD KIT": {
         "gain": [-5, -7, 5, -7, 5],

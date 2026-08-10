@@ -7,30 +7,45 @@ import threading
 from contextlib import suppress
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QEvent, QMetaObject, QThread, QTimer
+from PyQt6.QtCore import QEvent, QMetaObject, Qt, QThread, QTimer
 from PyQt6.QtGui import QAction, QIcon
 from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
-    QGroupBox, QLabel, QSlider, QComboBox, QPushButton, QStatusBar, QMessageBox,
+    QApplication,
+    QComboBox,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QSlider,
+    QStatusBar,
+    QVBoxLayout,
+    QWidget,
 )
-
-from vendor.eh_fifty import Device, NoiseGateMode, SliderType
 
 from base_info_dialog import format_base_info
 from eq_widget import EqTemplatesWidget
 from i18n import t
 from menu_install import install_entry, remove_entry
 from process_lock import (
-    PID_FILE, PROCESS_NAME,
-    _kill_previous, _remove_pid_file, _set_process_name,
+    PID_FILE,
+    PROCESS_NAME,
+    _kill_previous,
+    _remove_pid_file,
+    _set_process_name,
 )
 from raw_request import (
-    _OP_BASE_FW_MINOR, _OP_DEVICE_INFO, _OP_FIRMWARE_INFO,
-    _OP_HEADSET_FW_MAJOR, _OP_HEADSET_FW_MINOR,
+    _OP_BASE_FW_MINOR,
+    _OP_DEVICE_INFO,
+    _OP_FIRMWARE_INFO,
+    _OP_HEADSET_FW_MAJOR,
+    _OP_HEADSET_FW_MINOR,
     _raw_request,
 )
 from status_worker import StatusWorker
-
+from vendor.eh_fifty import Device, NoiseGateMode, SliderType
 
 SCRIPT_PATH = Path(__file__).resolve()
 APPS_DIR = Path.home() / ".local" / "share" / "applications"
@@ -455,9 +470,8 @@ class A50Window(QMainWindow):
         self.refresh_timer.stop()
         self._status_thread.quit()
         self._status_thread.wait(2000)
-        with suppress(Exception):
-            with self._device_lock:
-                self.device.close()
+        with suppress(Exception), self._device_lock:
+            self.device.close()
         super().closeEvent(event)
 
 

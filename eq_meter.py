@@ -1,5 +1,5 @@
 """Interactive 5-band EQ bargraph widget (ACC-style)."""
-from PyQt6.QtCore import Qt, QRectF, pyqtSignal
+from PyQt6.QtCore import QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QPainter, QPalette
 from PyQt6.QtWidgets import QWidget
 

@@ -8,7 +8,6 @@ info), which has no public wrapper.
 """
 from vendor.eh_fifty import Device
 
-
 _OP_DEVICE_INFO = 0x03
 _OP_FIRMWARE_INFO = 0x83
 _OP_BASE_FW_MINOR = 0x55

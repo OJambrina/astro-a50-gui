@@ -9,8 +9,8 @@ following arg returns data → likely a real sub-type. If 0x01 succeeds and the 
 arg times out → that arg is invalid and we stop.
 """
 import sys
-from eh_fifty import Device
 
+from eh_fifty import Device
 
 ARGS_TO_TRY = [0x01, 0x02, 0x00, 0x03, 0x04]
 

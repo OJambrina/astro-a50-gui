@@ -1,5 +1,6 @@
 """Dump everything eh-fifty knows about the A50 base+headset."""
 import dataclasses
+
 from eh_fifty import Device
 
 

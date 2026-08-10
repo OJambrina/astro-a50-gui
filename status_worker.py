@@ -5,7 +5,6 @@ periodic refresh. The shared lock serialises access to the device between this
 thread and the main thread's explicit writes.
 """
 import threading
-from typing import Optional
 
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 
@@ -24,8 +23,8 @@ class StatusWorker(QObject):
 
     @pyqtSlot()
     def refresh(self) -> None:
-        status: Optional[object] = None
-        battery: Optional[object] = None
+        status: object | None = None
+        battery: object | None = None
         with self._lock:
             try:
                 status = self._device.get_headset_status()

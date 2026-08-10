@@ -26,15 +26,23 @@ import threading
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (
-    QApplication, QButtonGroup, QComboBox, QGraphicsOpacityEffect, QGridLayout,
-    QGroupBox, QHBoxLayout, QInputDialog, QMessageBox, QPushButton, QRadioButton,
+    QApplication,
+    QButtonGroup,
+    QComboBox,
+    QGraphicsOpacityEffect,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QInputDialog,
+    QMessageBox,
+    QPushButton,
+    QRadioButton,
 )
-
-from vendor.eh_fifty import Device
 
 from eq_meter import _EqMeter
 from i18n import t
 from templates import _EQ_TEMPLATES, _load_user_templates, _save_user_templates
+from vendor.eh_fifty import Device
 
 
 class EqTemplatesWidget(QGroupBox):
@@ -134,10 +142,8 @@ class EqTemplatesWidget(QGroupBox):
     def has_pending(self) -> bool:
         if any(self._slot_pending.values()):
             return True
-        if (self._device_active_eq is not None
-                and self._selected_slot != self._device_active_eq):
-            return True
-        return False
+        return (self._device_active_eq is not None
+                and self._selected_slot != self._device_active_eq)
 
     # ----------------------------------------------------- public reload/push
 
@@ -166,8 +172,7 @@ class EqTemplatesWidget(QGroupBox):
                 if target is None and data is not None and data["name"] in all_tpls:
                     target = data["name"]
                 idx = combo.findData(target) if target else 0
-                if idx < 0:
-                    idx = 0
+                idx = max(idx, 0)
                 was_blocked = combo.blockSignals(True)
                 combo.setCurrentIndex(idx)
                 combo.blockSignals(was_blocked)
