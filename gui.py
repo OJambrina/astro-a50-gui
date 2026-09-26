@@ -198,7 +198,7 @@ class A50Window(QMainWindow):
                 icon = QIcon.fromTheme(theme_name)
                 if not icon.isNull():
                     break
-            self.cmb_gate.addItem(icon, m.name, m)
+            self.cmb_gate.addItem(icon, t(f"gate_{m.name.lower()}"), m)
         self.cmb_gate.currentIndexChanged.connect(self._on_gate_changed)
         layout.addWidget(self.cmb_gate, 0, 1)
         return box
@@ -412,7 +412,7 @@ class A50Window(QMainWindow):
         mode = self.cmb_gate.currentData()
         if mode is None:
             return
-        self.statusBar().showMessage(t("msg_gate_set", name=mode.name), 2000)
+        self.statusBar().showMessage(t("msg_gate_set", name=self.cmb_gate.currentText()), 2000)
         self._mark_dirty()
 
     def _on_alert_changed(self, value: int):
