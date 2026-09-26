@@ -4,13 +4,15 @@ Run with:
     .venv/bin/python -m unittest tests.py
 """
 import json
+import os
+import string
 import tempfile
 import unittest
-from pathlib import Path
-from unittest import mock
-
 import i18n
 import templates
+
+from pathlib import Path
+from unittest import mock
 from base_info_dialog import format_base_info
 from eq_widget import EqTemplatesWidget
 from vendor.eh_fifty import DeviceInfo, FirmwareVersion
@@ -136,6 +138,36 @@ class I18nTest(unittest.TestCase):
     def test_every_fr_key_has_an_en_counterpart(self):
         missing = set(i18n.TRANSLATIONS["fr"]) - set(i18n.TRANSLATIONS["en"])
         self.assertEqual(missing, set(), f"keys missing in EN: {missing}")
+            
+    def test_every_language_has_the_same_keys_as_en(self):
+        reference = set(i18n.TRANSLATIONS["en"])
+        for lang, strings in i18n.TRANSLATIONS.items():
+            with self.subTest(lang=lang):
+                self.assertEqual(set(strings), reference)
+
+    def test_placeholders_match_en(self):
+        # A translation missing `{name}` or `{error}` would raise at runtime.
+        def fields(text: str) -> set[str]:
+            return {f for _, f, _, _ in string.Formatter().parse(text) if f}
+
+        for lang, strings in i18n.TRANSLATIONS.items():
+            for key, text in strings.items():
+                with self.subTest(lang=lang, key=key):
+                    self.assertEqual(fields(text), fields(i18n.TRANSLATIONS["en"][key]))
+
+    def test_spanish_is_detected(self):
+        with mock.patch.object(i18n, "LANG", "es"):
+            self.assertEqual(i18n.t("btn_refresh"), "Actualizar")
+            self.assertEqual(i18n.t("gate_tournament"), "TORNEO")
+        with mock.patch.dict(os.environ, {"A50_LANG": "es"}):
+            self.assertEqual(i18n._detect_lang(), "es")
+        spanish = i18n.QLocale.Language.Spanish
+        with (
+            mock.patch.dict(os.environ, {"A50_LANG": ""}),
+            mock.patch.object(i18n, "QLocale") as qlocale,
+        ):
+            qlocale.system.return_value.language.return_value = spanish
+            self.assertEqual(i18n._detect_lang(), "es")
 
 
 class EqWidgetHasPendingTest(unittest.TestCase):
