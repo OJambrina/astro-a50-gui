@@ -8,11 +8,11 @@ import os
 import string
 import tempfile
 import unittest
-import i18n
-import templates
-
 from pathlib import Path
 from unittest import mock
+
+import i18n
+import templates
 from base_info_dialog import format_base_info
 from eq_widget import EqTemplatesWidget
 from vendor.eh_fifty import DeviceInfo, FirmwareVersion
