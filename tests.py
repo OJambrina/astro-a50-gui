@@ -138,7 +138,7 @@ class I18nTest(unittest.TestCase):
     def test_every_fr_key_has_an_en_counterpart(self):
         missing = set(i18n.TRANSLATIONS["fr"]) - set(i18n.TRANSLATIONS["en"])
         self.assertEqual(missing, set(), f"keys missing in EN: {missing}")
-            
+
     def test_every_language_has_the_same_keys_as_en(self):
         reference = set(i18n.TRANSLATIONS["en"])
         for lang, strings in i18n.TRANSLATIONS.items():
