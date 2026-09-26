@@ -12,7 +12,9 @@ from pathlib import Path
 from unittest import mock
 
 import i18n
+import settings
 import templates
+import themes
 from base_info_dialog import format_base_info
 from eq_widget import EqTemplatesWidget
 from vendor.eh_fifty import DeviceInfo, FirmwareVersion
@@ -108,6 +110,11 @@ class BaseInfoDialogTest(unittest.TestCase):
         self.assertIn("aa", joined)
 
 
+def _isolated_settings(tmp: str):
+    """Point settings.json at a temp dir, so the user's real preferences never leak in."""
+    return mock.patch.object(settings, "SETTINGS_PATH", Path(tmp) / "settings.json")
+
+
 class I18nTest(unittest.TestCase):
     def test_known_key_in_active_language(self):
         # `t` proxies through the module-level LANG; force FR for the test.
@@ -163,6 +170,8 @@ class I18nTest(unittest.TestCase):
             self.assertEqual(i18n._detect_lang(), "es")
         spanish = i18n.QLocale.Language.Spanish
         with (
+            tempfile.TemporaryDirectory() as tmp,
+            _isolated_settings(tmp),
             mock.patch.dict(os.environ, {"A50_LANG": ""}),
             mock.patch.object(i18n, "QLocale") as qlocale,
         ):
@@ -797,6 +806,72 @@ class EqWidgetPersistAndPushTest(unittest.TestCase):
         # Bands 2-4 inherit PRO's bandwidths.
         for b in (2, 3, 4):
             self.assertEqual(saved_bands[b][1], pro["bands"][b][1])
+
+
+class SettingsTest(unittest.TestCase):
+    def test_roundtrip_and_corrupt_file(self):
+        with tempfile.TemporaryDirectory() as tmp, _isolated_settings(tmp):
+            self.assertEqual(settings.get("theme", "auto"), "auto")
+            settings.put("theme", "dark")
+            self.assertEqual(settings.get("theme"), "dark")
+            settings.SETTINGS_PATH.write_text("{not json")
+            self.assertEqual(settings.load(), {})
+
+    def test_language_priority(self):
+        french = i18n.QLocale.Language.French
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            _isolated_settings(tmp),
+            mock.patch.object(i18n, "QLocale") as qlocale,
+        ):
+            qlocale.system.return_value.language.return_value = french
+            with mock.patch.dict(os.environ, {"A50_LANG": ""}):
+                self.assertEqual(i18n._detect_lang(), "fr")  # system locale
+                settings.put("language", "es")
+                self.assertEqual(i18n._detect_lang(), "es")  # menu choice beats the locale
+                settings.put("language", "auto")
+                self.assertEqual(i18n._detect_lang(), "fr")
+            with mock.patch.dict(os.environ, {"A50_LANG": "en"}):
+                self.assertEqual(i18n._detect_lang(), "en")  # env var beats everything
+
+
+class ThemesTest(unittest.TestCase):
+    def test_bundled_themes_are_listed(self):
+        self.assertEqual(themes.available(), ["dark", "light"])
+
+    def test_labels(self):
+        with mock.patch.object(i18n, "LANG", "es"):
+            self.assertEqual(themes.label("auto"), "Automático (colores del sistema)")
+            self.assertEqual(themes.label("light"), "Claro")
+            self.assertEqual(themes.label("dark"), "Oscuro")
+            self.assertEqual(themes.label("my-theme"), "My Theme")
+
+    def test_themes_only_change_colours(self):
+        palette_cls = themes.QPalette
+        for name, window, disabled_text in (("dark", "#202326", "#6d6f71"), ("light", "#eff0f1", "#a8a9ab")):
+            with self.subTest(theme=name):
+                app = mock.MagicMock()
+                with mock.patch.object(themes, "_native_palette", palette_cls()):
+                    self.assertEqual(themes.apply(app, name), name)
+                palette = app.setPalette.call_args.args[0]
+                self.assertEqual(palette.color(palette_cls.ColorRole.Window).name(), window)
+                disabled = palette.color(palette_cls.ColorGroup.Disabled, palette_cls.ColorRole.Text)
+                self.assertEqual(disabled.name(), disabled_text)
+                app.setStyle.assert_not_called()
+                app.setStyleSheet.assert_not_called()
+
+    def test_missing_or_broken_theme_falls_back_to_auto(self):
+        native = themes.QPalette()
+        app = mock.MagicMock()
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.object(themes, "THEMES_DIR", Path(tmp)),
+            mock.patch.object(themes, "_native_palette", native),
+        ):
+            Path(tmp, "broken.json").write_text('{"NotARole": "#000000"}')
+            self.assertEqual(themes.apply(app, "does-not-exist"), themes.AUTO)
+            self.assertEqual(themes.apply(app, "broken"), themes.AUTO)
+        app.setPalette.assert_called_with(native)
 
 
 if __name__ == "__main__":

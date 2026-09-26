@@ -1,0 +1,28 @@
+{
+  "Window": "#eff0f1",
+  "WindowText": "#232629",
+  "Base": "#ffffff",
+  "AlternateBase": "#f7f7f7",
+  "Text": "#232629",
+  "PlaceholderText": "#707d8a",
+  "Button": "#fcfcfc",
+  "ButtonText": "#232629",
+  "BrightText": "#ffffff",
+  "Highlight": "#3daee9",
+  "HighlightedText": "#ffffff",
+  "ToolTipBase": "#f7f7f7",
+  "ToolTipText": "#232629",
+  "Link": "#2980b9",
+  "LinkVisited": "#9b59b6",
+  "Light": "#ffffff",
+  "Midlight": "#f5f6f7",
+  "Mid": "#c0c4c8",
+  "Dark": "#a0a4a8",
+  "Shadow": "#474a4c",
+  "disabled": {
+    "WindowText": "#a8a9ab",
+    "Text": "#a8a9ab",
+    "ButtonText": "#a8a9ab",
+    "Highlight": "#a3d4fa"
+  }
+}
