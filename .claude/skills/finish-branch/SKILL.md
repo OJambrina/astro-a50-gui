@@ -74,10 +74,12 @@ The project vendors `eh-fifty` under `vendor/eh_fifty.py` so source
 tarballs (consumed by Flathub) are self-contained. A bare
 `from eh_fifty import X` would silently pick up an upstream PyPI
 install in the dev `.venv` while breaking on a freshly-cloned tarball.
+`scripts/` is excluded: its hardware probes run from the dev `.venv`
+and are never imported by the app.
 
 ```bash
 if grep -rnE '^from eh_fifty\b|^import eh_fifty\b' \
-     --include='*.py' --exclude-dir=vendor --exclude-dir=.venv .; then
+     --include='*.py' --exclude-dir=vendor --exclude-dir=scripts --exclude-dir=.venv .; then
     echo "FAIL: bare eh_fifty import above — use 'from vendor.eh_fifty import X' instead"
     exit 1
 fi
