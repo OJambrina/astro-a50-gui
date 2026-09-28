@@ -480,16 +480,21 @@ def main():
     _kill_previous(SCRIPT_PATH)
     PID_FILE.write_text(str(os.getpid()))
     atexit.register(_remove_pid_file)
+    # No Qt thread exists yet, so exiting outright is safe until then.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
 
     app = QApplication(sys.argv)
-    # Close windows on SIGTERM so closeEvent stops the status thread;
-    # sys.exit() here tore Qt down with the thread running and aborted.
-    # Python runs signal handlers only between bytecodes, so the timer
-    # hands control back to the interpreter while the Qt loop is idle.
-    signal.signal(signal.SIGTERM, lambda *_: app.closeAllWindows())
+    # From here, close windows on SIGTERM so closeEvent stops the status
+    # thread; sys.exit() would tear Qt down with it running and abort.
+    # The close is queued to the event loop: it never cuts into a slot
+    # mid-write, and a signal received during start-up closes the window
+    # once it is shown (closeAllWindows skips hidden windows). Python runs
+    # signal handlers only between bytecodes, so the timer hands control
+    # back to the interpreter while the Qt loop is idle.
+    signal.signal(signal.SIGTERM, lambda *_: QTimer.singleShot(0, app.closeAllWindows))
     sigterm_timer = QTimer()
     sigterm_timer.timeout.connect(lambda: None)
-    sigterm_timer.start(200)
+    sigterm_timer.start(500)
     # Help KDE / Wayland associate the window with the .desktop entry so
     # the headset icon survives across windows / taskbar / Alt-Tab.
     app.setApplicationName(PROCESS_NAME)
