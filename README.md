@@ -39,9 +39,15 @@ A udev rule is required to access the A50 USB device as a non-root user
 (once, then re-plug the base station):
 
 ```bash
-echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="9886", ATTR{idProduct}=="002c", MODE:="0666"' \
+echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="9886", ATTR{idProduct}=="002c", TAG+="uaccess"' \
     | sudo tee /etc/udev/rules.d/50-astro-a50.rules
 ```
+
+`TAG+="uaccess"` grants access only to the user logged in at the local seat,
+instead of every local user and process as `MODE:="0666"` would. Keep the
+`50-` prefix: uaccess tags must be set before systemd's `73-seat-late.rules`
+applies them. The file name is the same as before, so re-running the command
+replaces an older `0666` rule.
 
 ## Run
 
