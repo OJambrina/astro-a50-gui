@@ -22,6 +22,7 @@ built on top of the [eh-fifty](https://github.com/tdryer/eh-fifty) library.
 - KDE menu entry installation
 - Base station / headset firmware info dialog
 - French, English and Spanish UI (autodetected via locale, override with `A50_LANG=fr|en|es`)
+- Language and colour theme selectable from the Tools menu: Automatic (follows the desktop's colours), Light and Dark (official Breeze palettes). Themes are colour palettes in `themes/` (JSON, Qt palette role → colour) that keep the desktop's look and only change its colours: drop in a new file and it shows up in the menu
 
 ## Install
 
@@ -95,7 +96,9 @@ The application is split into focused modules:
 | `eq_widget.py`       | `EqTemplatesWidget` — radios + combos + meter + buttons + state for the EQ preset feature |
 | `eq_meter.py`        | `_EqMeter` — interactive 5-band bargraph widget               |
 | `templates.py`       | Builtin `_EQ_TEMPLATES` + user-template JSON persistence      |
-| `i18n.py`            | `TRANSLATIONS` (fr/en), `t()`, `_detect_lang()`               |
+| `i18n.py`            | `TRANSLATIONS` (fr/en/es), `t()`, `_detect_lang()`            |
+| `settings.py`        | Preferences (language, theme) in `settings.json`              |
+| `themes.py`          | Colour themes: Qt palettes loaded from `themes/*.json`        |
 | `raw_request.py`     | Raw HID opcodes outside eh-fifty's public API (FW info etc.)  |
 | `process_lock.py`    | Single-instance helper (`/proc` scan, kill stale GUIs)        |
 | `status_worker.py`   | `QObject` worker polling status on a `QThread`                |
@@ -154,8 +157,9 @@ a JSON library on disk; only their *content* gets pushed to a slot.
 ## Files
 
 - `gui.py`, `eq_widget.py`, `eq_meter.py`, `templates.py`, `i18n.py`,
-  `raw_request.py`, `process_lock.py`, `status_worker.py`,
-  `base_info_dialog.py`, `menu_install.py` — application code
+  `settings.py`, `themes.py`, `raw_request.py`, `process_lock.py`,
+  `status_worker.py`, `base_info_dialog.py`, `menu_install.py` — application code
+- `themes/` — colour palettes for the Theme menu (JSON)
 - `tests.py` — unit tests (run with `.venv/bin/python -m unittest tests.py`)
 - `scripts/` — reverse-engineering helpers (USB sniffing, one-shot probes,
   libvirt USB-passthrough udev wrapper). Not required to run the GUI; see
@@ -171,7 +175,13 @@ Covers:
 - Shape and bounds of every builtin EQ template
 - User-template JSON round-trip and malformed-entry tolerance
 - BCD / datetime helpers used to decode firmware build info
-- `i18n.t()` lookups, fallback to English, kwargs formatting, FR/EN key parity
+- `i18n.t()` lookups, fallback to English, kwargs formatting, same keys and
+  placeholders in every language
+- Language priority (`A50_LANG`, menu choice, system locale) and when a
+  restart is needed
+- `settings.json`: round-trip, atomic writes, corrupt or mistyped content
+- Theme palettes: listing, labels, malformed files fall back to Automatic
+- Menu slots never let an exception escape (PyQt6 would abort)
 - `EqTemplatesWidget.has_pending()` dirty-state logic (radio vs device,
   pending bands)
 - `EqTemplatesWidget._match_template()` (builtin / user / no-match)

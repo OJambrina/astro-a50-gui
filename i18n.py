@@ -3,6 +3,8 @@ import os
 
 from PyQt6.QtCore import QLocale
 
+import settings
+
 TRANSLATIONS = {
     "fr": {
         "window_title": "Astro A50 — Configuration",
@@ -60,6 +62,18 @@ TRANSLATIONS = {
         "info_raw_title": "Données brutes",
         "err_base_info": "Lecture impossible : {error}",
         "act_quit": "&Quitter",
+        "menu_language": "Langue",
+        "lang_auto": "Automatique (langue du système)",
+        "menu_theme": "Thème",
+        "theme_auto": "Automatique (couleurs du système)",
+        "theme_light": "Clair",
+        "theme_dark": "Sombre",
+        "dlg_restart_title": "Redémarrer",
+        "dlg_restart_msg": "La nouvelle langue s'appliquera au redémarrage. Redémarrer maintenant ?",
+        "dlg_restart_unsaved": "Les changements non synchronisés seront perdus.",
+        "err_restart": "Impossible de redémarrer l'application. Relance-la manuellement.",
+        "err_settings_save": "Impossible d'enregistrer le réglage : {error}",
+        "err_theme": "Impossible de charger le thème {name}, thème automatique utilisé.",
         "msg_menu_installed": "Entrée ajoutée au menu KDE",
         "msg_menu_removed": "Entrée retirée du menu KDE",
         "msg_menu_absent": "Aucune entrée à retirer",
@@ -140,6 +154,18 @@ TRANSLATIONS = {
         "info_raw_title": "Raw responses",
         "err_base_info": "Read failed: {error}",
         "act_quit": "&Quit",
+        "menu_language": "Language",
+        "lang_auto": "Automatic (system language)",
+        "menu_theme": "Theme",
+        "theme_auto": "Automatic (system colours)",
+        "theme_light": "Light",
+        "theme_dark": "Dark",
+        "dlg_restart_title": "Restart",
+        "dlg_restart_msg": "The new language applies after a restart. Restart now?",
+        "dlg_restart_unsaved": "Unsynced changes will be lost.",
+        "err_restart": "Could not restart the application. Please start it again manually.",
+        "err_settings_save": "Could not save the setting: {error}",
+        "err_theme": "Could not load the {name} theme, using Automatic.",
         "msg_menu_installed": "Added to the KDE menu",
         "msg_menu_removed": "Removed from the KDE menu",
         "msg_menu_absent": "Nothing to remove",
@@ -220,6 +246,18 @@ TRANSLATIONS = {
         "info_raw_title": "Respuestas en bruto",
         "err_base_info": "No se pudo leer: {error}",
         "act_quit": "&Salir",
+        "menu_language": "Idioma",
+        "lang_auto": "Automático (idioma del sistema)",
+        "menu_theme": "Tema",
+        "theme_auto": "Automático (colores del sistema)",
+        "theme_light": "Claro",
+        "theme_dark": "Oscuro",
+        "dlg_restart_title": "Reiniciar",
+        "dlg_restart_msg": "El nuevo idioma se aplicará al reiniciar. ¿Reiniciar ahora?",
+        "dlg_restart_unsaved": "Los cambios sin sincronizar se perderán.",
+        "err_restart": "No se pudo reiniciar la aplicación. Vuelve a abrirla manualmente.",
+        "err_settings_save": "No se pudo guardar el ajuste: {error}",
+        "err_theme": "No se pudo cargar el tema {name}; se usa Automático.",
         "msg_menu_installed": "Añadido al menú de KDE",
         "msg_menu_removed": "Quitado del menú de KDE",
         "msg_menu_absent": "No hay nada que quitar",
@@ -247,15 +285,35 @@ TRANSLATIONS = {
 }
 
 
-def _detect_lang() -> str:
-    override = os.environ.get("A50_LANG", "").lower()
-    if override in TRANSLATIONS:
-        return override
+# Shown in the language menu in their own language, whatever the UI language is.
+LANGUAGE_NAMES = {"en": "English", "es": "Español", "fr": "Français"}
+
+def _system_lang() -> str:
     lang = QLocale.system().name().split("_")[0]
     return lang if lang in TRANSLATIONS else "en"
 
 
+def _detect_lang() -> str:
+    # "es", "es_ES" and "es-ES" all mean Spanish, like the system locale.
+    override = os.environ.get("A50_LANG", "").lower().replace("-", "_").split("_")[0]
+    if override in TRANSLATIONS:
+        return override
+    saved = settings.get("language", "auto")
+    if saved in TRANSLATIONS:
+        return saved
+    return _system_lang()
+
+
 LANG = _detect_lang()
+
+
+def needs_restart(choice: str) -> bool:
+    """Whether picking `choice` in the language menu changes the running language.
+
+    The restart drops A50_LANG (see gui.restart_app), so only the choice and
+    the system locale matter.
+    """
+    return (choice if choice in TRANSLATIONS else _system_lang()) != LANG
 
 
 def gate_label(mode_name: str) -> str:

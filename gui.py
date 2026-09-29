@@ -7,8 +7,16 @@ import threading
 from contextlib import suppress
 from pathlib import Path
 
-from PyQt6.QtCore import QEvent, QMetaObject, Qt, QThread, QTimer
-from PyQt6.QtGui import QAction, QIcon
+from PyQt6.QtCore import (
+    QEvent,
+    QMetaObject,
+    QProcess,
+    QProcessEnvironment,
+    Qt,
+    QThread,
+    QTimer,
+)
+from PyQt6.QtGui import QAction, QActionGroup, QIcon
 from PyQt6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -17,6 +25,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QSlider,
@@ -25,9 +34,11 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+import settings
+import themes
 from base_info_dialog import format_base_info
 from eq_widget import EqTemplatesWidget
-from i18n import gate_label, t
+from i18n import LANGUAGE_NAMES, gate_label, needs_restart, t
 from menu_install import install_entry, remove_entry
 from process_lock import (
     PID_FILE,
@@ -253,10 +264,79 @@ class A50Window(QMainWindow):
         tools.addAction(act_info)
 
         tools.addSeparator()
+        tools.addMenu(self._build_language_menu(tools))
+        tools.addMenu(self._build_theme_menu(tools))
+
+        tools.addSeparator()
         act_quit = QAction(t("act_quit"), self)
         act_quit.setShortcut("Ctrl+Q")
         act_quit.triggered.connect(self.close)
         tools.addAction(act_quit)
+
+    def _build_language_menu(self, parent) -> QMenu:
+        menu = QMenu(t("menu_language"), parent)
+        group = QActionGroup(menu)
+        current = settings.get("language", "auto")
+        self._lang_actions = {}
+        for code, name in [("auto", t("lang_auto")), *LANGUAGE_NAMES.items()]:
+            action = QAction(name, menu)
+            action.setCheckable(True)
+            action.setChecked(code == current)
+            action.triggered.connect(lambda _=False, c=code: self._set_language(c))
+            group.addAction(action)
+            menu.addAction(action)
+            self._lang_actions[code] = action
+        return menu
+
+    def _save_setting(self, key: str, value) -> bool:
+        """Store a preference; warn instead of crashing if ~/.config can't be written."""
+        try:
+            settings.put(key, value)
+        except OSError as e:
+            QMessageBox.warning(self, t("err_title"), t("err_settings_save", error=e))
+            return False
+        return True
+
+    def _set_language(self, code: str):
+        previous = settings.get("language", "auto")
+        if code == previous:
+            return
+        if not self._save_setting("language", code):
+            self._lang_actions.get(previous, self._lang_actions["auto"]).setChecked(True)
+            return
+        if not needs_restart(code):
+            return  # already running in that language (A50_LANG, declined restart...)
+        msg = t("dlg_restart_msg")
+        if self._dirty or self.eq.has_pending():
+            msg += "\n\n" + t("dlg_restart_unsaved")
+        reply = QMessageBox.question(self, t("dlg_restart_title"), msg)
+        if reply == QMessageBox.StandardButton.Yes:
+            if restart_app():
+                self.close()
+            else:
+                QMessageBox.warning(self, t("err_title"), t("err_restart"))
+
+    def _build_theme_menu(self, parent) -> QMenu:
+        menu = QMenu(t("menu_theme"), parent)
+        group = QActionGroup(menu)
+        current = themes.current()  # what is really applied, even after a failed load
+        self._theme_actions = {}
+        for name in [themes.AUTO, *sorted(themes.available(), key=themes.label)]:
+            action = QAction(themes.label(name), menu)
+            action.setCheckable(True)
+            action.setChecked(name == current)
+            action.triggered.connect(lambda _=False, n=name: self._set_theme(n))
+            group.addAction(action)
+            menu.addAction(action)
+            self._theme_actions[name] = action
+        return menu
+
+    def _set_theme(self, name: str):
+        applied = themes.apply(QApplication.instance(), name)
+        self._theme_actions[applied].setChecked(True)
+        if applied != name:
+            self.statusBar().showMessage(t("err_theme", name=themes.label(name)), 5000)
+        self._save_setting("theme", applied)
 
     def _show_base_info(self):
         try:
@@ -476,6 +556,22 @@ class A50Window(QMainWindow):
         super().closeEvent(event)
 
 
+def restart_app() -> bool:
+    """Start a new instance of the GUI; it closes this one (see process_lock).
+
+    A50_LANG is dropped from its environment, so the language picked in the
+    menu takes effect. Returns False if the new process could not be started.
+    """
+    process = QProcess()
+    env = QProcessEnvironment.systemEnvironment()
+    env.remove("A50_LANG")
+    process.setProcessEnvironment(env)
+    process.setProgram(sys.executable)
+    process.setArguments([str(SCRIPT_PATH)])
+    started, _pid = process.startDetached()
+    return started
+
+
 def main():
     _set_process_name()
     _kill_previous(SCRIPT_PATH)
@@ -505,6 +601,7 @@ def main():
         app_icon = QIcon.fromTheme("audio-headphones")
     if not app_icon.isNull():
         app.setWindowIcon(app_icon)
+    themes.apply(app, settings.get("theme", themes.AUTO))
     try:
         device = Device()
     except Exception as e:
