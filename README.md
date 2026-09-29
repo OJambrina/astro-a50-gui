@@ -39,8 +39,26 @@ A udev rule is required to access the A50 USB device as a non-root user
 (once, then re-plug the base station):
 
 ```bash
-echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="9886", ATTR{idProduct}=="002c", MODE:="0666"' \
+echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="9886", ATTR{idProduct}=="002c", TAG+="uaccess"' \
     | sudo tee /etc/udev/rules.d/50-astro-a50.rules
+```
+
+`TAG+="uaccess"` grants access only to the user of the active local session,
+instead of every local user and process as `MODE:="0666"` would. Access follows
+that session: over SSH, from another user's session or after fast user
+switching, the base station is not accessible.
+
+The file name must sort before systemd's `71-seat.rules`, so keep the `50-`
+prefix. On systems without systemd-logind (e.g. Void, Alpine, or Artix with
+OpenRC), `uaccess` has no effect: use `GROUP="plugdev", MODE="0660"` instead of
+`TAG+="uaccess"` and add your user to the `plugdev` group.
+
+The file name is the same as before, so re-running the command replaces an
+older `0666` rule. A base station that is already plugged in keeps the old
+permissions until you re-plug it or run:
+
+```bash
+sudo udevadm trigger --action=change --attr-match=idVendor=9886 --attr-match=idProduct=002c
 ```
 
 ## Run
