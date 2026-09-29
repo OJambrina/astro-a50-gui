@@ -9,6 +9,7 @@ Not required to run the GUI.
 | `hid-parse.py`          | Pairs OUT/IN URBs from a capture, decodes payloads, maps opcodes onto `eh_fifty._CommandType` where possible |
 | `dump.py`               | Probes a single HID opcode and pretty-prints the response |
 | `try-fw-args.py`        | Brute-forces argument bytes for an opcode to find which yields a different response |
+| `sigterm-check.py`      | Regression check, base plugged in: SIGTERM and a relaunch must close the GUI cleanly, not abort |
 | `a50-vm-usb-watcher.sh` | udev hot-attach helper for the libvirt USB passthrough used to run Astro Command Center in a Windows VM alongside the device |
 
 ACC traffic capture workflow: pass the A50 base through libvirt to a Windows
