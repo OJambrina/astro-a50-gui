@@ -292,7 +292,8 @@ class A50Window(QMainWindow):
     def _show_about(self):
         QMessageBox.about(
             self,
-            t("act_about"),
+            # The menu label's "&" marks a shortcut; a window title would show it.
+            t("act_about").replace("&", ""),
             t("about_text", version=app_version(), url=REPO_URL),
         )
 
