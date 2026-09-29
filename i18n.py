@@ -61,6 +61,10 @@ TRANSLATIONS = {
         "info_fw_headset": "Version casque",
         "info_raw_title": "Données brutes",
         "err_base_info": "Lecture impossible : {error}",
+        "act_about": "À &propos",
+        "about_text": (
+            '<b>Astro A50 Config</b> {version}<br><br>Configuration du casque Astro A50 Gen 4.<br><br><a href="{url}/releases">Versions et nouveautés</a> · <a href="{url}">Code source</a><br><br>Licence GPL-3.0-or-later. Inclut eh-fifty (MIT).'
+        ),
         "act_quit": "&Quitter",
         "menu_language": "Langue",
         "lang_auto": "Automatique (langue du système)",
@@ -153,6 +157,10 @@ TRANSLATIONS = {
         "info_fw_headset": "Headset version",
         "info_raw_title": "Raw responses",
         "err_base_info": "Read failed: {error}",
+        "act_about": "&About",
+        "about_text": (
+            '<b>Astro A50 Config</b> {version}<br><br>Configuration for the Astro A50 Gen 4 headset.<br><br><a href="{url}/releases">Releases and changes</a> · <a href="{url}">Source code</a><br><br>Licensed under GPL-3.0-or-later. Includes eh-fifty (MIT).'
+        ),
         "act_quit": "&Quit",
         "menu_language": "Language",
         "lang_auto": "Automatic (system language)",
@@ -245,6 +253,10 @@ TRANSLATIONS = {
         "info_fw_headset": "Versión FW auriculares",
         "info_raw_title": "Respuestas en bruto",
         "err_base_info": "No se pudo leer: {error}",
+        "act_about": "&Acerca de",
+        "about_text": (
+            '<b>Astro A50 Config</b> {version}<br><br>Configuración de los auriculares Astro A50 Gen 4.<br><br><a href="{url}/releases">Versiones y novedades</a> · <a href="{url}">Código fuente</a><br><br>Licencia GPL-3.0-or-later. Incluye eh-fifty (MIT).'
+        ),
         "act_quit": "&Salir",
         "menu_language": "Idioma",
         "lang_auto": "Automático (idioma del sistema)",

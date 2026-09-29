@@ -1,6 +1,7 @@
 """Minimal Qt GUI for configuring an Astro A50 Gen 4 via eh-fifty."""
 import atexit
 import os
+import re
 import signal
 import sys
 import threading
@@ -62,6 +63,17 @@ SCRIPT_PATH = Path(__file__).resolve()
 APPS_DIR = Path.home() / ".local" / "share" / "applications"
 DESKTOP_FILE = APPS_DIR / f"{PROCESS_NAME}.desktop"
 LEGACY_DESKTOP_FILE = APPS_DIR / "astro-a50-config.desktop"
+REPO_URL = "https://github.com/manuacl/astro-a50-gui"
+
+
+def app_version() -> str:
+    """Version from the pyproject.toml shipped next to this file, or "?"."""
+    with suppress(OSError):
+        text = (SCRIPT_PATH.parent / "pyproject.toml").read_text()
+        match = re.search(r'^version = "([^"]+)"$', text, re.MULTILINE)
+        if match:
+            return match.group(1)
+    return "?"
 
 
 def _slider_types():
@@ -268,10 +280,22 @@ class A50Window(QMainWindow):
         tools.addMenu(self._build_theme_menu(tools))
 
         tools.addSeparator()
+        act_about = QAction(t("act_about"), self)
+        act_about.triggered.connect(self._show_about)
+        tools.addAction(act_about)
+
         act_quit = QAction(t("act_quit"), self)
         act_quit.setShortcut("Ctrl+Q")
         act_quit.triggered.connect(self.close)
         tools.addAction(act_quit)
+
+    def _show_about(self):
+        QMessageBox.about(
+            self,
+            # The menu label's "&" marks a shortcut; a window title would show it.
+            t("act_about").replace("&", ""),
+            t("about_text", version=app_version(), url=REPO_URL),
+        )
 
     def _build_language_menu(self, parent) -> QMenu:
         menu = QMenu(t("menu_language"), parent)

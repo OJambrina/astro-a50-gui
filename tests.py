@@ -111,6 +111,18 @@ class BaseInfoDialogTest(unittest.TestCase):
         self.assertIn("aa", joined)
 
 
+class AppVersionTest(unittest.TestCase):
+    def test_reads_pyproject_version(self):
+        text = (Path(gui.__file__).parent / "pyproject.toml").read_text()
+        self.assertIn(f'version = "{gui.app_version()}"', text)
+
+    def test_missing_pyproject_gives_placeholder(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            gui, "SCRIPT_PATH", Path(tmp) / "gui.py"
+        ):
+            self.assertEqual(gui.app_version(), "?")
+
+
 def setUpModule():
     # i18n.LANG is detected at import, from the developer's own settings.json
     # and locale: run the tests in English whatever those are.
