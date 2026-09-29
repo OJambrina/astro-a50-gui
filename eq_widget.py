@@ -39,10 +39,10 @@ from PyQt6.QtWidgets import (
     QRadioButton,
 )
 
+from device_handle import DeviceHandle
 from eq_meter import _EqMeter
 from i18n import t
 from templates import _EQ_TEMPLATES, _load_user_templates, _save_user_templates
-from vendor.eh_fifty import Device
 
 # set_eq_preset_name sends [slot, len, name, NUL] after a 3-byte header in a
 # 64-byte report: longer names make the device write fail.
@@ -58,7 +58,7 @@ class EqTemplatesWidget(QGroupBox):
     # a preset that matches no template (e.g. one set up in Command Center).
     ON_DEVICE = "\x00on-device"
 
-    def __init__(self, device: Device, lock: threading.RLock, parent=None):
+    def __init__(self, device: DeviceHandle, lock: threading.RLock, parent=None):
         super().__init__(t("grp_eq_templates"), parent)
         self.device = device
         self._device_lock = lock

@@ -1433,15 +1433,44 @@ class SweepRegressionTest(unittest.TestCase):
         device = mock.MagicMock()
         device.get_headset_status.side_effect = [usb.core.USBError("gone"), "status"]
         device.get_battery_status.side_effect = [usb.core.USBError("gone"), "battery"]
+        device.reopen.return_value = True
         worker = status_worker.StatusWorker.__new__(status_worker.StatusWorker)
         worker._device, worker._lock = device, threading.RLock()
         worker.statusReady = mock.MagicMock()
         worker.reconnected = mock.MagicMock()
-        with mock.patch.object(status_worker.Device, "__init__", return_value=None) as init:
-            worker.refresh()
-        init.assert_called_once_with(device)
+        worker.refresh()
+        device.reopen.assert_called_once_with()
         worker.statusReady.emit.assert_called_once_with("status", "battery")
         worker.reconnected.emit.assert_called_once()
+
+    def test_worker_does_not_reopen_on_an_error_answer(self):
+        import threading
+
+        import status_worker
+        device = mock.MagicMock()
+        device.get_headset_status.side_effect = AssertionError()
+        worker = status_worker.StatusWorker.__new__(status_worker.StatusWorker)
+        worker._device, worker._lock = device, threading.RLock()
+        worker.statusReady = mock.MagicMock()
+        worker.reconnected = mock.MagicMock()
+        worker.refresh()
+        device.reopen.assert_not_called()
+
+    def test_device_handle_swaps_in_a_new_device(self):
+        from device_handle import DeviceHandle
+        from vendor.eh_fifty import DeviceNotConnected
+        first, second = mock.MagicMock(), mock.MagicMock()
+        factory = mock.MagicMock(side_effect=[first, DeviceNotConnected(), second])
+        handle = DeviceHandle(factory)
+        handle.get_battery_status()
+        first.get_battery_status.assert_called_once()
+        self.assertFalse(handle.reopen())          # base still unplugged
+        first.close.assert_called_once()
+        with self.assertRaises(DeviceNotConnected):
+            handle.get_battery_status()
+        self.assertTrue(handle.reopen())           # plugged back
+        handle.get_battery_status()
+        second.get_battery_status.assert_called_once()
 
     def test_reconnect_reloads_only_what_failed_to_load(self):
         window = mock.MagicMock()

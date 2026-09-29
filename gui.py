@@ -38,6 +38,7 @@ from PyQt6.QtWidgets import (
 import settings
 import themes
 from base_info_dialog import format_base_info
+from device_handle import DeviceHandle
 from eq_widget import EqTemplatesWidget
 from i18n import LANGUAGE_NAMES, gate_label, needs_restart, t
 from menu_install import install_entry, remove_entry
@@ -57,7 +58,7 @@ from raw_request import (
     _raw_request,
 )
 from status_worker import StatusWorker
-from vendor.eh_fifty import Device, NoiseGateMode, SliderType
+from vendor.eh_fifty import NoiseGateMode, SliderType
 
 SCRIPT_PATH = Path(__file__).resolve()
 APPS_DIR = (
@@ -112,7 +113,7 @@ class A50Window(QMainWindow):
         "padding: 6px 14px; border-radius: 4px; border: 1px solid palette(mid); }"
     )
 
-    def __init__(self, device: Device):
+    def __init__(self, device: DeviceHandle):
         super().__init__()
         self.device = device
         self._loading = False
@@ -672,7 +673,7 @@ def main():
         app.setWindowIcon(app_icon)
     themes.apply(app, settings.get("theme", themes.AUTO))
     try:
-        device = Device()
+        device = DeviceHandle()
     except Exception as e:
         QMessageBox.critical(None, t("err_open_title"), t("err_open", error=e))
         return 1

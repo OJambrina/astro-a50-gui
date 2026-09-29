@@ -6,7 +6,7 @@ get_headset_firmware_version). This module remains to dump the raw
 response payloads shown in the dialog — including opcode 0x83 (firmware
 info), which has no public wrapper.
 """
-from vendor.eh_fifty import Device
+from device_handle import DeviceHandle
 
 _OP_DEVICE_INFO = 0x03
 _OP_FIRMWARE_INFO = 0x83
@@ -19,7 +19,7 @@ class RawRequestError(Exception):
     """The base answered a raw request with an ERROR status."""
 
 
-def _raw_request(device: Device, opcode: int, payload: bytes = b"") -> bytes:
+def _raw_request(device: DeviceHandle, opcode: int, payload: bytes = b"") -> bytes:
     """Issue a raw HID request bypassing eh_fifty's _CommandType whitelist.
 
     Returns the response payload (bytes after the [0x02, status, len] header).
