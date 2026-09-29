@@ -1,0 +1,66 @@
+name: Update PKGBUILD
+
+# Triggers on push of a v* tag (created by version.yml at merge time).
+# Points packaging/aur/PKGBUILD at the new release: pkgver, pkgrel=1 and
+# the tarball's sha256. This can't happen in the bump commit itself: the
+# tarball contains the PKGBUILD, so its checksum only exists once the tag
+# does. The resulting push to main has no merged PR, so version.yml skips it.
+
+on:
+  push:
+    tags: ['v*']
+  # Manual run for a specific tag. A tag older than the PKGBUILD's
+  # pkgver is ignored rather than downgrading it.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to package (e.g. v0.2.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: version
+  cancel-in-progress: false
+
+jobs:
+  pkgbuild:
+    runs-on: ubuntu-latest
+    steps:
+      # BUMP_TOKEN, as in version.yml: the push to main bypasses the ruleset.
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          token: ${{ secrets.BUMP_TOKEN }}
+
+      - name: Update PKGBUILD
+        env:
+          TAG_NAME: ${{ inputs.tag || github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          if ! [[ "$TAG_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Unexpected tag: $TAG_NAME"
+            exit 1
+          fi
+          VERSION="${TAG_NAME#v}"
+          PKGBUILD=packaging/aur/PKGBUILD
+          CURRENT=$(sed -n 's/^pkgver=//p' "$PKGBUILD")
+          if [ "$CURRENT" = "$VERSION" ]; then
+            echo "PKGBUILD already at $VERSION"
+            exit 0
+          fi
+          if [ "$(printf '%s\n' "$CURRENT" "$VERSION" | sort -V | tail -1)" != "$VERSION" ]; then
+            echo "PKGBUILD at $CURRENT, newer than $VERSION: nothing to do"
+            exit 0
+          fi
+          SUM=$(curl -fsSL "https://github.com/$REPO/archive/refs/tags/$TAG_NAME.tar.gz" | sha256sum | cut -d' ' -f1)
+          sed -i -e "s/^pkgver=.*/pkgver=$VERSION/" \
+                 -e "s/^pkgrel=.*/pkgrel=1/" \
+                 -e "s/^sha256sums=.*/sha256sums=('$SUM')/" "$PKGBUILD"
+          git diff
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -am "chore: update PKGBUILD to $VERSION"
+          git push origin HEAD:main --no-verify
