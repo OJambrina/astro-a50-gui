@@ -44,21 +44,36 @@ USER_TEMPLATES_FILE = (
 )
 
 
+def _valid_template(tpl) -> dict | None:
+    """Normalise one JSON entry, or None when its shape is not a template."""
+    gain = list(tpl["gain"])
+    bands = {int(k): tuple(v) for k, v in tpl["bands"].items()}
+    if (len(gain) != 5 or not all(isinstance(g, int) for g in gain)
+            or set(bands) != {1, 2, 3, 4, 5}
+            or not all(len(v) == 2 and all(isinstance(x, int) for x in v)
+                       for v in bands.values())):
+        return None
+    return {"gain": gain, "bands": bands}
+
+
 def _load_user_templates() -> dict:
     """Read user-defined templates from disk; tolerant of missing/malformed entries."""
     if not USER_TEMPLATES_FILE.exists():
         return {}
     try:
-        raw = json.loads(USER_TEMPLATES_FILE.read_text())
-    except (OSError, json.JSONDecodeError):
+        raw = json.loads(USER_TEMPLATES_FILE.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(raw, dict):
         return {}
     out: dict[str, dict] = {}
     for name, tpl in raw.items():
         try:
-            bands = {int(k): tuple(v) for k, v in tpl["bands"].items()}
-            out[name] = {"gain": list(tpl["gain"]), "bands": bands}
-        except (KeyError, TypeError, ValueError):
+            valid = _valid_template(tpl)
+        except (AttributeError, KeyError, TypeError, ValueError):
             continue
+        if valid is not None:
+            out[name] = valid
     return out
 
 
@@ -71,4 +86,15 @@ def _save_user_templates(templates: dict) -> None:
         }
         for name, tpl in templates.items()
     }
-    USER_TEMPLATES_FILE.write_text(json.dumps(serializable, indent=2))
+    # Same as settings.put: write a temp file, then replace in one step, so a
+    # full disk or a kill mid-write never truncates the whole library.
+    tmp = USER_TEMPLATES_FILE.with_name(USER_TEMPLATES_FILE.name + ".tmp")
+    try:
+        with tmp.open("w", encoding="utf-8") as f:
+            f.write(json.dumps(serializable, indent=2))
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, USER_TEMPLATES_FILE)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise

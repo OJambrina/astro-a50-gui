@@ -44,6 +44,10 @@ from i18n import t
 from templates import _EQ_TEMPLATES, _load_user_templates, _save_user_templates
 from vendor.eh_fifty import Device
 
+# set_eq_preset_name sends [slot, len, name, NUL] after a 3-byte header in a
+# 64-byte report: longer names make the device write fail.
+MAX_NAME_BYTES = 58
+
 
 class EqTemplatesWidget(QGroupBox):
     """Self-contained 5-band EQ + 3-slot preset editor."""
@@ -218,44 +222,51 @@ class EqTemplatesWidget(QGroupBox):
         Caller must hold ``self._device_lock``."""
         all_tpls = self._all_templates()
         user_templates_changed = False
-        for slot, combo in self.template_combos.items():
-            if not self._slot_pending[slot]:
-                continue
-            bands = self._slot_bands[slot]
-            if not bands:
-                continue
-            name = combo.currentData() or ""
-            device = self._slot_device.get(slot)
-            if name == self.ON_DEVICE and device is not None:
-                # A preset the base holds but no template matches: keep its own
-                # name and bandwidths instead of borrowing another template's.
-                name = device["name"]
-                bw_source = device["bands"]
-            else:
-                bw_source = all_tpls.get(name, _EQ_TEMPLATES["MEDIA"])["bands"]
-            gain = [g for (_freq, g) in bands]
-            device_bands = {
-                b: (bands[b - 1][0], 0 if b in (1, 5) else bw_source[b][1])
-                for b in range(1, 6)
-            }
-            if name in self._user_templates:
-                self._user_templates[name] = {
-                    "gain": list(gain),
-                    "bands": dict(device_bands),
+        try:
+            for slot, combo in self.template_combos.items():
+                if not self._slot_pending[slot]:
+                    continue
+                bands = self._slot_bands[slot]
+                if not bands:
+                    continue
+                name = combo.currentData() or ""
+                device = self._slot_device.get(slot)
+                if name == self.ON_DEVICE and device is not None:
+                    # A preset the base holds but no template matches: keep its own
+                    # name and bandwidths instead of borrowing another template's.
+                    name = device["name"]
+                    bw_source = device["bands"]
+                else:
+                    bw_source = all_tpls.get(name, _EQ_TEMPLATES["MEDIA"])["bands"]
+                gain = [g for (_freq, g) in bands]
+                device_bands = {
+                    b: (bands[b - 1][0], 0 if b in (1, 5) else bw_source[b][1])
+                    for b in range(1, 6)
                 }
-                user_templates_changed = True
-                self._slot_modified[slot].clear()
-            self.device.set_eq_preset_name(slot, name)
-            self.device.set_eq_preset_gain(slot, gain)
-            for b, (freq, bw) in device_bands.items():
-                self.device.set_eq_preset_freq_and_bw(slot, b, freq, bw)
-            data = {"name": name, "gain": gain, "bands": device_bands}
-            self._slot_device[slot] = data
-            self._device_templates[slot] = self._match_template(data)
-            self._slot_pending[slot].clear()
-        if user_templates_changed:
-            _save_user_templates(self._user_templates)
-        if self._selected_slot != self._device_active_eq:
+                self.device.set_eq_preset_name(slot, name)
+                self.device.set_eq_preset_gain(slot, gain)
+                for b, (freq, bw) in device_bands.items():
+                    self.device.set_eq_preset_freq_and_bw(slot, b, freq, bw)
+                # Only once the device took it: a failed write keeps the preset
+                # and its orange marks as they were.
+                if name in self._user_templates:
+                    self._user_templates[name] = {
+                        "gain": list(gain),
+                        "bands": dict(device_bands),
+                    }
+                    user_templates_changed = True
+                    self._slot_modified[slot].clear()
+                data = {"name": name, "gain": gain, "bands": device_bands}
+                self._slot_device[slot] = data
+                self._device_templates[slot] = self._match_template(data)
+                self._slot_pending[slot].clear()
+        finally:
+            # Presets the device already took are saved even when a later
+            # slot fails, so memory and disk never disagree.
+            if user_templates_changed:
+                _save_user_templates(self._user_templates)
+        if (self._device_active_eq is not None
+                and self._selected_slot != self._device_active_eq):
             self.device.set_active_eq_preset(self._selected_slot)
             self._device_active_eq = self._selected_slot
         self._refresh_meter()
@@ -278,6 +289,7 @@ class EqTemplatesWidget(QGroupBox):
         else:
             self._slot_modified[slot].discard(band)
         self._slot_pending[slot].add(band)
+        self._refresh_meter()
         self._update_apply_enabled()
         self._emit_dirty_if_changed()
 
@@ -350,8 +362,13 @@ class EqTemplatesWidget(QGroupBox):
         )
         if resp != QMessageBox.StandardButton.Yes:
             return
-        del self._user_templates[name]
-        _save_user_templates(self._user_templates)
+        removed = self._user_templates.pop(name)
+        try:
+            _save_user_templates(self._user_templates)
+        except OSError as e:
+            self._user_templates[name] = removed
+            QMessageBox.warning(self, t("err_title"), t("err_template_save", error=e))
+            return
         affected_slots = [
             s for s, c in self.template_combos.items() if c.currentData() == name
         ]
@@ -405,27 +422,50 @@ class EqTemplatesWidget(QGroupBox):
                 b: (bands[b - 1][0], 0 if b in (1, 5) else bw_source[b][1])
                 for b in range(1, 6)
             }
-            self._user_templates[name] = {"gain": list(gain), "bands": new_bands}
-            _save_user_templates(self._user_templates)
-            if is_new:
-                self._refresh_combos(select={slot: name})
+            # Device first: a write it refuses leaves library, disk and combos
+            # untouched instead of holding a preset that can never be pushed.
             with self._device_lock:
                 self.device.set_eq_preset_name(slot, name)
                 self.device.set_eq_preset_gain(slot, gain)
                 for b, (freq, bw) in new_bands.items():
                     self.device.set_eq_preset_freq_and_bw(slot, b, freq, bw)
                 self.device.save_values()
-            self._device_templates[slot] = name
-            self._slot_pending[slot].clear()
         except Exception as e:
-            QMessageBox.warning(self, t("err_title"), t("err_template_apply", error=e))
-            return
-        finally:
             QApplication.restoreOverrideCursor()
             btn.setText(t(idle_key))
-        # Reload everything to mirror the new device state.
-        with self._device_lock:
-            self.reload_under_lock(None)
+            self._update_apply_enabled()
+            QMessageBox.warning(self, t("err_title"),
+                                t("err_template_apply", error=repr(e) if not str(e) else e))
+            return
+        self._device_templates[slot] = name
+        self._slot_pending[slot].clear()
+        self._user_templates[name] = {"gain": list(gain), "bands": new_bands}
+        if is_new:
+            self._refresh_combos(select={slot: name})
+        # Only this slot changed on the device: a global reload would drop the
+        # other slots' unsynced edits and forget the device's active slot.
+        # Another slot showing this preset (Save of an existing one) takes its
+        # new values and needs a Sync, unless it holds unsynced edits of its own.
+        for s, combo in self.template_combos.items():
+            if s == slot or combo.currentData() != name or not self._slot_bands[s]:
+                continue
+            if not self._slot_pending[s]:
+                self._slot_bands[s] = [(new_bands[b][0], gain[b - 1]) for b in range(1, 6)]
+                self._slot_pending[s] = {1, 2, 3, 4, 5}
+            self._slot_modified[s] = {
+                b for b in range(1, 6) if self._is_band_off_template(s, b)
+            }
+        self._slot_modified[slot] = set()
+        QApplication.restoreOverrideCursor()
+        btn.setText(t(idle_key))
+        self._refresh_meter()
+        self._update_apply_enabled()
+        self._emit_dirty_if_changed()
+        try:
+            _save_user_templates(self._user_templates)
+        except OSError as e:
+            # The device holds the preset; only the library file failed.
+            QMessageBox.warning(self, t("err_title"), t("err_template_save", error=e))
 
     def _prompt_new_template_name(self) -> str | None:
         existing = set(self._all_templates())
@@ -444,6 +484,10 @@ class EqTemplatesWidget(QGroupBox):
                 return None
             name = name.strip()
             if not name:
+                continue
+            if len(name.encode()) > MAX_NAME_BYTES:
+                QMessageBox.warning(self, t("err_title"),
+                                    t("err_name_too_long", max=MAX_NAME_BYTES))
                 continue
             if name in _EQ_TEMPLATES:
                 QMessageBox.warning(self, t("err_title"),

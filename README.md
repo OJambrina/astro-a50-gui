@@ -174,7 +174,8 @@ a JSON library on disk; only their *content* gets pushed to a slot.
 Covers:
 - Shape and bounds of every builtin EQ template
 - User-template JSON round-trip and malformed-entry tolerance
-- BCD / datetime helpers used to decode firmware build info
+- Base info dialog: every value and raw dump shown, a failed read shown as
+  n/a with its reason
 - `i18n.t()` lookups, fallback to English, kwargs formatting, same keys and
   placeholders in every language
 - Language priority (`A50_LANG`, menu choice, system locale) and when a

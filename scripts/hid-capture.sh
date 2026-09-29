@@ -7,7 +7,7 @@
 # Stop with Ctrl-C. Output is text-format usbmon (kernel doc:
 # https://www.kernel.org/doc/html/latest/usb/usbmon.html).
 #
-# We filter only lines for the A50 endpoints (5 OUT / 5 IN) on the current
+# We filter only lines for the A50 endpoints (5 OUT / 5 IN) on the device's
 # bus, to keep the file small. The bus/dev numbers are auto-detected via
 # lsusb at start; if the device re-enumerates mid-capture (e.g. bootloader
 # PID swap), restart the capture.
@@ -34,10 +34,11 @@ if [[ ! -r "$USBMON" ]]; then
 fi
 
 DEV_PAD=$(printf "%03d" "$DEV")
-# usbmon text format is "Type:Dev:EP" — bus is implicit in /sys/kernel/debug/usb/usbmon/Nt.
-# EP 5 is the HID custom interface (eh_fifty endpoints 0x05 OUT / 0x85 IN). Skipping
-# audio EPs 1/2/3 which would drown the capture.
-FILTER=":${DEV_PAD}:05"
+# usbmon text format is "Type:BUS:DEV:EP" (DEV zero-padded to 3 digits, EP not
+# padded), e.g. "Io:1:017:5" / "Ii:1:017:5". EP 5 is the HID custom interface
+# (eh_fifty endpoints 0x05 OUT / 0x85 IN). Skipping audio EPs 1/2/3 which would
+# drown the capture. The trailing space avoids matching EP 50+ and the like.
+FILTER=":${BUS}:${DEV_PAD}:5 "
 
 echo "Capturing A50 traffic from bus $BUS dev $DEV ($USBMON)"
 echo "Filtering on '$FILTER'"

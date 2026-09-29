@@ -60,7 +60,10 @@ from status_worker import StatusWorker
 from vendor.eh_fifty import Device, NoiseGateMode, SliderType
 
 SCRIPT_PATH = Path(__file__).resolve()
-APPS_DIR = Path.home() / ".local" / "share" / "applications"
+APPS_DIR = (
+    Path(os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share"))
+    / "applications"
+)
 DESKTOP_FILE = APPS_DIR / f"{PROCESS_NAME}.desktop"
 LEGACY_DESKTOP_FILE = APPS_DIR / "astro-a50-config.desktop"
 REPO_URL = "https://github.com/manuacl/astro-a50-gui"
@@ -114,6 +117,7 @@ class A50Window(QMainWindow):
         self.device = device
         self._loading = False
         self._dirty = False
+        self._loaded_balance: int | None = None
         # The device is shared between the main UI thread, the EQ widget,
         # and the status worker thread; the lock serialises USB HID access.
         # RLock allows nested acquisitions (reload_all wraps refresh_status).
@@ -151,6 +155,7 @@ class A50Window(QMainWindow):
         self._status_worker = StatusWorker(device, self._device_lock)
         self._status_worker.moveToThread(self._status_thread)
         self._status_worker.statusReady.connect(self._on_status_ready)
+        self._status_worker.reconnected.connect(self._on_reconnected)
         self._status_thread.start()
 
         self.refresh_timer = QTimer(self)
@@ -363,20 +368,31 @@ class A50Window(QMainWindow):
         self._save_setting("theme", applied)
 
     def _show_base_info(self):
-        try:
-            with self._device_lock:
-                dev_info = self.device.get_device_info()
-                base_fw = self.device.get_base_firmware_version()
-                headset_fw = self.device.get_headset_firmware_version()
-                raw = [
-                    ("0x03", _raw_request(self.device, _OP_DEVICE_INFO)),
-                    ("0x83(01)", _raw_request(self.device, _OP_FIRMWARE_INFO, b"\x01")),
-                    ("0x55", _raw_request(self.device, _OP_BASE_FW_MINOR)),
-                    ("0xda(0a)", _raw_request(self.device, _OP_HEADSET_FW_MAJOR, b"\x0a")),
-                    ("0xd6(0a)", _raw_request(self.device, _OP_HEADSET_FW_MINOR, b"\x0a")),
-                ]
-        except Exception as e:
-            QMessageBox.warning(self, t("err_title"), t("err_base_info", error=e))
+        # Each read on its own: with the headset off or undocked, the headset
+        # opcodes answer ERROR, which must not hide what the base did answer.
+        # A failed read is shown as its exception, never as an empty string.
+        def read(call):
+            try:
+                return call()
+            except Exception as e:
+                return e
+
+        with self._device_lock:
+            dev_info = read(self.device.get_device_info)
+            base_fw = read(self.device.get_base_firmware_version)
+            headset_fw = read(self.device.get_headset_firmware_version)
+            raw = [
+                (label, read(lambda op=op, arg=arg: _raw_request(self.device, op, arg)))
+                for label, op, arg in (
+                    ("0x03", _OP_DEVICE_INFO, b""),
+                    ("0x83(01)", _OP_FIRMWARE_INFO, b"\x01"),
+                    ("0x55", _OP_BASE_FW_MINOR, b""),
+                    ("0xda(0a)", _OP_HEADSET_FW_MAJOR, b"\x0a"),
+                    ("0xd6(0a)", _OP_HEADSET_FW_MINOR, b"\x0a"),
+                )
+            ]
+        if all(isinstance(v, Exception) for v in (dev_info, base_fw, headset_fw)):
+            QMessageBox.warning(self, t("err_title"), t("err_base_info", error=repr(dev_info)))
             return
         lines = format_base_info(dev_info, base_fw, headset_fw, raw)
         QMessageBox.information(self, t("act_base_info"), "<br>".join(lines))
@@ -392,7 +408,11 @@ class A50Window(QMainWindow):
             QMessageBox.warning(self, t("err_title"), t("err_menu_install", error=e))
 
     def _remove_menu_entry(self):
-        msg = remove_entry(APPS_DIR, DESKTOP_FILE, LEGACY_DESKTOP_FILE)
+        try:
+            msg = remove_entry(APPS_DIR, DESKTOP_FILE, LEGACY_DESKTOP_FILE)
+        except OSError as e:
+            QMessageBox.warning(self, t("err_title"), t("err_menu_remove", error=e))
+            return
         self.statusBar().showMessage(msg, 3000)
 
     def _build_action_buttons(self):
@@ -438,18 +458,27 @@ class A50Window(QMainWindow):
                     for st in self.slider_widgets
                 }
 
+            # A control whose read failed is disabled, like the sliders below,
+            # so Sync never writes a default that was never loaded.
+            self.sld_balance.setEnabled(balance is not None)
+            self._loaded_balance = balance
             if balance is not None:
                 self.sld_balance.setValue(balance)
                 self.lbl_balance.setText(f"{balance}/255")
+            else:
+                self.lbl_balance.setText(t("na"))
 
-            if gate is not None:
-                idx = self.cmb_gate.findData(gate)
-                if idx >= 0:
-                    self.cmb_gate.setCurrentIndex(idx)
+            gate_idx = self.cmb_gate.findData(gate) if gate is not None else -1
+            self.cmb_gate.setEnabled(gate_idx >= 0)
+            if gate_idx >= 0:
+                self.cmb_gate.setCurrentIndex(gate_idx)
 
+            self.sld_alert.setEnabled(alert is not None)
             if alert is not None:
                 self.sld_alert.setValue(alert)
                 self.lbl_alert.setText(f"{alert}%")
+            else:
+                self.lbl_alert.setText(t("na"))
 
             for st, (sld, lbl) in self.slider_widgets.items():
                 v = slider_values.get(st)
@@ -489,6 +518,16 @@ class A50Window(QMainWindow):
         """Slot called by the worker thread when a status poll completes."""
         self._update_status_display(status, battery)
 
+    def _on_reconnected(self):
+        """The worker reopened the base: load what the failed reads left out.
+
+        Only then: a reload drops unsynced edits, and controls that were read
+        fine keep what the user sees."""
+        controls = [self.sld_balance, self.cmb_gate, self.sld_alert,
+                    *(sld for sld, _ in self.slider_widgets.values())]
+        if not all(c.isEnabled() for c in controls):
+            self.reload_all()
+
     def _update_status_display(self, status, battery):
         if status is None:
             self.lbl_power.setText(t("base_unreachable"))
@@ -514,10 +553,8 @@ class A50Window(QMainWindow):
     def _on_gate_changed(self, _):
         if self._loading:
             return
-        mode = self.cmb_gate.currentData()
-        if mode is None:
+        if self.cmb_gate.currentData() is None:
             return
-        self.statusBar().showMessage(t("msg_gate_set", name=self.cmb_gate.currentText()), 2000)
         self._mark_dirty()
 
     def _on_alert_changed(self, value: int):
@@ -540,12 +577,20 @@ class A50Window(QMainWindow):
         QApplication.processEvents()
         try:
             with self._device_lock:
-                # 1. Simple scalar settings (balance, gate, alert, sliders)
-                self.device.set_default_balance(self.sld_balance.value())
+                # 1. Simple scalar settings (balance, gate, alert, sliders).
+                # The slider shows the live balance (get_balance), which the
+                # headset buttons change; write the default balance only when
+                # the user moved the slider, so Sync never persists a button
+                # adjustment as the power-on default.
+                balance = self.sld_balance.value()
+                if self.sld_balance.isEnabled() and balance != self._loaded_balance:
+                    self.device.set_default_balance(balance)
+                    self._loaded_balance = balance
                 gate_mode = self.cmb_gate.currentData()
-                if gate_mode is not None:
+                if self.cmb_gate.isEnabled() and gate_mode is not None:
                     self.device.set_noise_gate_mode(gate_mode)
-                self.device.set_alert_volume(self.sld_alert.value())
+                if self.sld_alert.isEnabled():
+                    self.device.set_alert_volume(self.sld_alert.value())
                 for st, (sld, _) in self.slider_widgets.items():
                     if sld.isEnabled():
                         self.device.set_slider_value(st, sld.value())

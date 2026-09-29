@@ -20,10 +20,11 @@ def _set_process_name(name: str = PROCESS_NAME) -> None:
 def _is_our_instance(pid_dir: Path, script_path: Path) -> bool:
     # Primary check: kernel comm set via prctl matches our process name.
     try:
-        if (pid_dir / "comm").read_text().strip() == PROCESS_NAME:
-            return True
+        comm = (pid_dir / "comm").read_bytes().strip()
     except OSError:
         return False
+    if comm == PROCESS_NAME.encode():
+        return True
     # Fallback: same script path running under a Python interpreter (handles
     # legacy instances launched before prctl was added).
     try:
@@ -36,34 +37,58 @@ def _is_our_instance(pid_dir: Path, script_path: Path) -> bool:
         cmdline = (pid_dir / "cmdline").read_bytes().split(b"\x00")
     except OSError:
         return False
-    for arg in cmdline[1:]:
-        if not arg:
-            continue
-        try:
-            decoded = arg.decode()
-        except UnicodeDecodeError:
-            continue
-        if Path(decoded).name != script_path.name:
-            continue
-        try:
-            if Path(decoded).resolve(strict=True) == script_path:
-                return True
-        except (OSError, RuntimeError):
-            continue
-    return False
+    # The script is the interpreter's first non-option argument; a later
+    # argument that happens to be named gui.py belongs to another program.
+    script = next((a for a in cmdline[1:] if a and not a.startswith(b"-")), None)
+    if script is None:
+        return False
+    try:
+        decoded = script.decode()
+    except UnicodeDecodeError:
+        return False
+    if Path(decoded).name != script_path.name:
+        return False
+    try:
+        # A relative path is relative to that process's cwd, not ours.
+        candidate = Path(os.readlink(pid_dir / "cwd")) / decoded
+        return candidate.resolve(strict=True) == script_path
+    except (OSError, RuntimeError):
+        return False
 
 
-def _find_other_instances(script_path: Path) -> list[int]:
+def _start_time(pid_dir: Path) -> int | None:
+    """Start time in clock ticks since boot (field 22 of /proc/<pid>/stat)."""
+    try:
+        stat = (pid_dir / "stat").read_bytes()
+        return int(stat[stat.rindex(b")") + 2:].split()[19])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _find_other_instances(script_path: Path, proc: Path = Path("/proc")) -> list[int]:
+    """Our user's older instances. Only older ones: two copies started at the
+    same moment would otherwise each kill the other and leave no window."""
     me = os.getpid()
+    uid = os.getuid()
+    my_start = _start_time(proc / str(me))
     found: list[int] = []
-    for entry in Path("/proc").iterdir():
+    for entry in proc.iterdir():
         if not entry.name.isdigit():
             continue
         pid = int(entry.name)
         if pid == me:
             continue
-        if _is_our_instance(entry, script_path):
-            found.append(pid)
+        try:
+            if entry.stat().st_uid != uid:
+                continue  # another user's instance: not ours to stop
+        except OSError:
+            continue
+        if not _is_our_instance(entry, script_path):
+            continue
+        start = _start_time(entry)
+        if my_start is not None and start is not None and (start, pid) > (my_start, me):
+            continue  # newer than us: it will stop us, not the reverse
+        found.append(pid)
     return found
 
 
@@ -71,7 +96,7 @@ def _wait_for_exit(pid: int, timeout_s: float = 4.0) -> bool:
     for _ in range(int(timeout_s * 10)):
         try:
             os.kill(pid, 0)
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
             return True
         time.sleep(0.1)
     return False

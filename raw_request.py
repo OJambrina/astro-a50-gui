@@ -15,6 +15,10 @@ _OP_HEADSET_FW_MAJOR = 0xDA
 _OP_HEADSET_FW_MINOR = 0xD6
 
 
+class RawRequestError(Exception):
+    """The base answered a raw request with an ERROR status."""
+
+
 def _raw_request(device: Device, opcode: int, payload: bytes = b"") -> bytes:
     """Issue a raw HID request bypassing eh_fifty's _CommandType whitelist.
 
@@ -28,4 +32,10 @@ def _raw_request(device: Device, opcode: int, payload: bytes = b"") -> bytes:
     if not resp or resp[0] != 0x02 or len(resp) < 3:
         raise ValueError(f"unexpected response: {resp.hex()}")
     length = min(resp[2], len(resp) - 3)
-    return resp[3:3 + length]
+    payload = resp[3:3 + length]
+    if resp[1] == 0x01:
+        # ERROR answer: 4 status bytes, then a NUL-terminated reason such as
+        # HID_ERROR_SLAVE_NO_SLAVE (headset off and undocked).
+        reason = payload[4:].split(b"\x00", 1)[0].decode("ascii", "replace")
+        raise RawRequestError(f"0x{opcode:02x}: {reason or payload.hex()}")
+    return payload

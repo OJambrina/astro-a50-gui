@@ -1,7 +1,11 @@
 """Dump everything eh-fifty knows about the A50 base+headset."""
 import dataclasses
+import sys
+from pathlib import Path
 
-from eh_fifty import Device
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from vendor.eh_fifty import Device, SliderType
 
 
 def show(label, value):
@@ -35,5 +39,5 @@ with Device() as d:
         try_call(f"eq_preset_name[{i}]", d.get_eq_preset_name, i)
 
     print("\n--- Sliders ---")
-    for i in range(8):
-        try_call(f"slider[{i}]", d.get_slider_value, i)
+    for st in SliderType:
+        try_call(f"slider[{st.name}]", d.get_slider_value, st)
