@@ -1472,6 +1472,20 @@ class SweepRegressionTest(unittest.TestCase):
         handle.get_battery_status()
         second.get_battery_status.assert_called_once()
 
+    def test_absent_base_fails_on_the_call_not_the_lookup(self):
+        from device_handle import DeviceHandle
+        from vendor.eh_fifty import DeviceNotConnected
+        handle = DeviceHandle(mock.MagicMock(side_effect=[mock.MagicMock(), DeviceNotConnected()]))
+        self.assertFalse(handle.reopen())
+        method = handle.get_headset_status          # must not raise
+        with self.assertRaises(DeviceNotConnected):
+            method()
+        self.assertIsNone(gui.safe(handle.get_headset_status))
+        window = mock.MagicMock()
+        window.device, window._device_lock = handle, mock.MagicMock()
+        gui.A50Window.refresh_status(window)         # Refresh with the base unplugged
+        window._update_status_display.assert_called_once_with(None, None)
+
     def test_reconnect_reloads_only_what_failed_to_load(self):
         window = mock.MagicMock()
         window.slider_widgets = {}

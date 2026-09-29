@@ -21,9 +21,16 @@ class DeviceHandle:
 
     def __getattr__(self, name: str):
         # Only reached for names not set in __init__: everything eh_fifty offers.
-        if self._device is None:
-            raise DeviceNotConnected
-        return getattr(self._device, name)
+        if self._device is not None:
+            return getattr(self._device, name)
+        if callable(getattr(Device, name, None)):
+            # Callers take the method first and call it inside their own try
+            # (``safe(device.get_balance)``): fail on the call, not the lookup,
+            # or the error escapes their handler and a Qt slot aborts the app.
+            def absent(*_args, **_kwargs):
+                raise DeviceNotConnected
+            return absent
+        raise DeviceNotConnected
 
     def reopen(self) -> bool:
         """Drop the dead Device and open the base again. Caller holds the
