@@ -7,7 +7,15 @@ import threading
 from contextlib import suppress
 from pathlib import Path
 
-from PyQt6.QtCore import QEvent, QMetaObject, QProcess, Qt, QThread, QTimer
+from PyQt6.QtCore import (
+    QEvent,
+    QMetaObject,
+    QProcess,
+    QProcessEnvironment,
+    Qt,
+    QThread,
+    QTimer,
+)
 from PyQt6.QtGui import QAction, QActionGroup, QIcon
 from PyQt6.QtWidgets import (
     QApplication,
@@ -30,7 +38,7 @@ import settings
 import themes
 from base_info_dialog import format_base_info
 from eq_widget import EqTemplatesWidget
-from i18n import LANGUAGE_NAMES, t
+from i18n import LANGUAGE_NAMES, gate_label, t
 from menu_install import install_entry, remove_entry
 from process_lock import (
     PID_FILE,
@@ -268,6 +276,7 @@ class A50Window(QMainWindow):
         menu = QMenu(t("menu_language"), parent)
         group = QActionGroup(menu)
         current = settings.get("language", "auto")
+        self._lang_actions = {}
         for code, name in [("auto", t("lang_auto")), *LANGUAGE_NAMES.items()]:
             action = QAction(name, menu)
             action.setCheckable(True)
@@ -275,25 +284,40 @@ class A50Window(QMainWindow):
             action.triggered.connect(lambda _=False, c=code: self._set_language(c))
             group.addAction(action)
             menu.addAction(action)
+            self._lang_actions[code] = action
         return menu
 
+    def _save_setting(self, key: str, value) -> bool:
+        """Store a preference; warn instead of crashing if ~/.config can't be written."""
+        try:
+            settings.put(key, value)
+        except OSError as e:
+            QMessageBox.warning(self, t("err_title"), t("err_settings_save", error=e))
+            return False
+        return True
+
     def _set_language(self, code: str):
-        if code == settings.get("language", "auto"):
+        previous = settings.get("language", "auto")
+        if code == previous:
             return
-        settings.put("language", code)
+        if not self._save_setting("language", code):
+            self._lang_actions[previous].setChecked(True)
+            return
         msg = t("dlg_restart_msg")
         if self._dirty or self.eq.has_pending():
             msg += "\n\n" + t("dlg_restart_unsaved")
         reply = QMessageBox.question(self, t("dlg_restart_title"), msg)
         if reply == QMessageBox.StandardButton.Yes:
-            # The new instance closes this one (see process_lock) before opening the base.
-            QProcess.startDetached(sys.executable, [str(SCRIPT_PATH)])
-            self.close()
+            if restart_app():
+                self.close()
+            else:
+                QMessageBox.warning(self, t("err_title"), t("err_restart"))
 
     def _build_theme_menu(self, parent) -> QMenu:
         menu = QMenu(t("menu_theme"), parent)
         group = QActionGroup(menu)
-        current = settings.get("theme", themes.AUTO)
+        current = themes.current()  # what is really applied, even after a failed load
+        self._theme_actions = {}
         for name in [themes.AUTO, *sorted(themes.available(), key=themes.label)]:
             action = QAction(themes.label(name), menu)
             action.setCheckable(True)
@@ -301,10 +325,15 @@ class A50Window(QMainWindow):
             action.triggered.connect(lambda _=False, n=name: self._set_theme(n))
             group.addAction(action)
             menu.addAction(action)
+            self._theme_actions[name] = action
         return menu
 
     def _set_theme(self, name: str):
-        settings.put("theme", themes.apply(QApplication.instance(), name))
+        applied = themes.apply(QApplication.instance(), name)
+        self._theme_actions[applied].setChecked(True)
+        if applied != name:
+            self.statusBar().showMessage(t("err_theme", name=themes.label(name)), 5000)
+        self._save_setting("theme", applied)
 
     def _show_base_info(self):
         try:
@@ -522,6 +551,22 @@ class A50Window(QMainWindow):
         with suppress(Exception), self._device_lock:
             self.device.close()
         super().closeEvent(event)
+
+
+def restart_app() -> bool:
+    """Start a new instance of the GUI; it closes this one (see process_lock).
+
+    A50_LANG is dropped from its environment, so the language picked in the
+    menu takes effect. Returns False if the new process could not be started.
+    """
+    process = QProcess()
+    env = QProcessEnvironment.systemEnvironment()
+    env.remove("A50_LANG")
+    process.setProcessEnvironment(env)
+    process.setProgram(sys.executable)
+    process.setArguments([str(SCRIPT_PATH)])
+    started, _pid = process.startDetached()
+    return started
 
 
 def main():

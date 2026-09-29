@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import gui
 import i18n
 import settings
 import templates
@@ -820,14 +821,26 @@ class SettingsTest(unittest.TestCase):
             settings.SETTINGS_PATH.write_text("{not json")
             self.assertEqual(settings.load(), {})
 
+    def test_wrong_types_fall_back_to_the_default(self):
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            _isolated_settings(tmp),
+            mock.patch.dict(os.environ, {"A50_LANG": ""}),
+            mock.patch.object(i18n, "QLocale") as qlocale,
+        ):
+            settings.SETTINGS_PATH.write_text('{"language": ["es"], "theme": 3}')
+            self.assertEqual(settings.get("language", "auto"), "auto")
+            self.assertEqual(settings.get("theme", "auto"), "auto")
+            qlocale.system.return_value.name.return_value = "fr_FR"
+            self.assertEqual(i18n._detect_lang(), "fr")  # no TypeError at startup
+
     def test_language_priority(self):
-        french = i18n.QLocale.Language.French
         with (
             tempfile.TemporaryDirectory() as tmp,
             _isolated_settings(tmp),
             mock.patch.object(i18n, "QLocale") as qlocale,
         ):
-            qlocale.system.return_value.language.return_value = french
+            qlocale.system.return_value.name.return_value = "fr_FR"
             with mock.patch.dict(os.environ, {"A50_LANG": ""}):
                 self.assertEqual(i18n._detect_lang(), "fr")  # system locale
                 settings.put("language", "es")
@@ -854,8 +867,12 @@ class ThemesTest(unittest.TestCase):
         for name, window, disabled_text in (("dark", "#202326", "#6d6f71"), ("light", "#eff0f1", "#a8a9ab")):
             with self.subTest(theme=name):
                 app = mock.MagicMock()
-                with mock.patch.object(themes, "_native_palette", palette_cls()):
+                with (
+                    mock.patch.object(themes, "_native_palette", palette_cls()),
+                    mock.patch.object(themes, "_current", themes.AUTO),
+                ):
                     self.assertEqual(themes.apply(app, name), name)
+                    self.assertEqual(themes.current(), name)
                 palette = app.setPalette.call_args.args[0]
                 self.assertEqual(palette.color(palette_cls.ColorRole.Window).name(), window)
                 disabled = palette.color(palette_cls.ColorGroup.Disabled, palette_cls.ColorRole.Text)
@@ -870,11 +887,112 @@ class ThemesTest(unittest.TestCase):
             tempfile.TemporaryDirectory() as tmp,
             mock.patch.object(themes, "THEMES_DIR", Path(tmp)),
             mock.patch.object(themes, "_native_palette", native),
+            self.assertLogs(themes.LOGGER, "WARNING"),
         ):
             Path(tmp, "broken.json").write_text('{"NotARole": "#000000"}')
             self.assertEqual(themes.apply(app, "does-not-exist"), themes.AUTO)
             self.assertEqual(themes.apply(app, "broken"), themes.AUTO)
         app.setPalette.assert_called_with(native)
+
+    def test_malformed_theme_files_fall_back_to_auto(self):
+        native = themes.QPalette()
+        bad_files = ["[]", '{"Window": null}', '{"disabled": []}', '{"Window": "#zzz"}', "{not json"]
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.object(themes, "THEMES_DIR", Path(tmp)),
+            mock.patch.object(themes, "_native_palette", native),
+            mock.patch.object(themes, "_current", "dark"),
+            self.assertLogs(themes.LOGGER, "WARNING"),
+        ):
+            for i, content in enumerate(bad_files):
+                with self.subTest(content=content):
+                    Path(tmp, f"bad{i}.json").write_text(content)
+                    app = mock.MagicMock()
+                    self.assertEqual(themes.apply(app, f"bad{i}"), themes.AUTO)
+                    app.setPalette.assert_called_once_with(native)
+                    self.assertEqual(themes.current(), themes.AUTO)
+
+
+class RestartAppTest(unittest.TestCase):
+    def test_drops_a50_lang_and_reports_failure(self):
+        # Points 4 and 5: a failed start is reported, and the new process
+        # doesn't inherit A50_LANG, so the language picked in the menu applies.
+        with (
+            mock.patch.dict(os.environ, {"A50_LANG": "fr"}),
+            mock.patch.object(gui, "QProcess") as process_cls,
+        ):
+            process = process_cls.return_value
+            process.startDetached.return_value = (False, -1)
+            self.assertFalse(gui.restart_app())
+            process.startDetached.return_value = (True, 1234)
+            self.assertTrue(gui.restart_app())
+        env = process.setProcessEnvironment.call_args.args[0]
+        self.assertFalse(env.contains("A50_LANG"))
+        process.setArguments.assert_called_with([str(gui.SCRIPT_PATH)])
+
+
+class MenuSlotsTest(unittest.TestCase):
+    """The menu slots never let an exception escape (PyQt6 would abort the app)."""
+
+    def _window(self):
+        window = mock.MagicMock()
+        window._dirty = False
+        window.eq.has_pending.return_value = False
+        window._lang_actions = {c: mock.MagicMock() for c in ("auto", "en", "es", "fr")}
+        window._theme_actions = {n: mock.MagicMock() for n in ("auto", "dark", "light")}
+        window._save_setting = lambda key, value: gui.A50Window._save_setting(window, key, value)
+        return window
+
+    def test_unwritable_config_warns_instead_of_crashing(self):
+        window = self._window()
+        with (
+            mock.patch.object(gui.settings, "put", side_effect=PermissionError("read-only")),
+            mock.patch.object(gui.QMessageBox, "warning") as warning,
+        ):
+            self.assertFalse(gui.A50Window._save_setting(window, "theme", "dark"))
+        warning.assert_called_once()
+
+    def test_unsaved_language_restores_the_menu(self):
+        window = self._window()
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            _isolated_settings(tmp),
+            mock.patch.object(gui.settings, "put", side_effect=OSError("disk full")),
+            mock.patch.object(gui.QMessageBox, "warning"),
+            mock.patch.object(gui.QMessageBox, "question") as question,
+        ):
+            gui.A50Window._set_language(window, "es")
+        window._lang_actions["auto"].setChecked.assert_called_with(True)
+        question.assert_not_called()
+
+    def test_failed_restart_warns_and_keeps_the_window(self):
+        window = self._window()
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            _isolated_settings(tmp),
+            mock.patch.object(
+                gui.QMessageBox, "question", return_value=gui.QMessageBox.StandardButton.Yes
+            ),
+            mock.patch.object(gui.QMessageBox, "warning") as warning,
+            mock.patch.object(gui, "restart_app", return_value=False),
+        ):
+            gui.A50Window._set_language(window, "es")
+            self.assertEqual(settings.get("language"), "es")
+        warning.assert_called_once()
+        window.close.assert_not_called()
+
+    def test_failed_theme_checks_automatic_again(self):
+        window = self._window()
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            _isolated_settings(tmp),
+            mock.patch.object(gui.themes, "apply", return_value=themes.AUTO),
+            mock.patch.object(gui, "QApplication"),
+        ):
+            gui.A50Window._set_theme(window, "dark")
+            self.assertEqual(settings.get("theme"), themes.AUTO)
+        window._theme_actions[themes.AUTO].setChecked.assert_called_with(True)
+        window.statusBar.return_value.showMessage.assert_called_once()
 
 
 if __name__ == "__main__":

@@ -18,10 +18,15 @@ def load() -> dict:
 
 
 def get(key: str, default=None):
-    return load().get(key, default)
+    """Stored value, or `default` if it's missing or of another type than `default`."""
+    value = load().get(key, default)
+    if default is not None and not isinstance(value, type(default)):
+        return default
+    return value
 
 
 def put(key: str, value) -> None:
+    """Store a value. Raises OSError if the file can't be written."""
     data = load()
     data[key] = value
     SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
