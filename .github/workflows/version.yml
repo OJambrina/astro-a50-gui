@@ -48,8 +48,16 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           COMMIT_SHA: ${{ github.sha }}
         run: |
-          PR=$(gh pr list --state merged --base main --limit 5 --json number,mergeCommit \
-            --jq ".[] | select(.mergeCommit.oid == \"$COMMIT_SHA\") | .number")
+          # Ask which PR holds this commit, rather than scanning recent PRs:
+          # a PR opened long before its merge would fall outside that window.
+          # GitHub links a commit to its PR asynchronously, so retry briefly
+          # while the answer is empty (a direct push has no PR at all).
+          for attempt in 1 2 3 4 5 6; do
+            PR=$(gh api "repos/$GITHUB_REPOSITORY/commits/$COMMIT_SHA/pulls" \
+              --jq '[.[] | select(.merged_at != null and .base.ref == "main")][0].number // empty')
+            [ -n "$PR" ] && break
+            [ "$attempt" -lt 6 ] && sleep 5
+          done
           echo "number=$PR" >> $GITHUB_OUTPUT
 
       - name: Resolve bump type from PR label
