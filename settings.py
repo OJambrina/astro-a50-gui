@@ -26,8 +26,21 @@ def get(key: str, default=None):
 
 
 def put(key: str, value) -> None:
-    """Store a value. Raises OSError if the file can't be written."""
+    """Store a value. Raises OSError if the file can't be written.
+
+    The new content goes to a temporary file that then replaces settings.json
+    in one step, so a full disk or a kill mid-write never leaves it truncated.
+    """
     data = load()
     data[key] = value
     SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    SETTINGS_PATH.write_text(json.dumps(data, indent=2) + "\n")
+    tmp = SETTINGS_PATH.with_name(SETTINGS_PATH.name + ".tmp")
+    try:
+        with tmp.open("w") as f:
+            f.write(json.dumps(data, indent=2) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, SETTINGS_PATH)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise

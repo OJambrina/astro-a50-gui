@@ -288,18 +288,32 @@ TRANSLATIONS = {
 # Shown in the language menu in their own language, whatever the UI language is.
 LANGUAGE_NAMES = {"en": "English", "es": "Español", "fr": "Français"}
 
+def _system_lang() -> str:
+    lang = QLocale.system().name().split("_")[0]
+    return lang if lang in TRANSLATIONS else "en"
+
+
 def _detect_lang() -> str:
-    override = os.environ.get("A50_LANG", "").lower()
+    # "es", "es_ES" and "es-ES" all mean Spanish, like the system locale.
+    override = os.environ.get("A50_LANG", "").lower().replace("-", "_").split("_")[0]
     if override in TRANSLATIONS:
         return override
     saved = settings.get("language", "auto")
     if saved in TRANSLATIONS:
         return saved
-    lang = QLocale.system().name().split("_")[0]
-    return lang if lang in TRANSLATIONS else "en"
+    return _system_lang()
 
 
 LANG = _detect_lang()
+
+
+def needs_restart(choice: str) -> bool:
+    """Whether picking `choice` in the language menu changes the running language.
+
+    The restart drops A50_LANG (see gui.restart_app), so only the choice and
+    the system locale matter.
+    """
+    return (choice if choice in TRANSLATIONS else _system_lang()) != LANG
 
 
 def gate_label(mode_name: str) -> str:

@@ -33,7 +33,7 @@ def current() -> str:
 def available() -> list[str]:
     if not THEMES_DIR.is_dir():
         return []
-    return sorted(p.stem for p in THEMES_DIR.glob("*.json"))
+    return sorted(p.stem for p in THEMES_DIR.glob("*.json") if p.stem != AUTO)
 
 
 def label(name: str) -> str:

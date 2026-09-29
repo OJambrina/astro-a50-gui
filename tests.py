@@ -111,6 +111,14 @@ class BaseInfoDialogTest(unittest.TestCase):
         self.assertIn("aa", joined)
 
 
+def setUpModule():
+    # i18n.LANG is detected at import, from the developer's own settings.json
+    # and locale: run the tests in English whatever those are.
+    patcher = mock.patch.object(i18n, "LANG", "en")
+    patcher.start()
+    unittest.addModuleCleanup(patcher.stop)
+
+
 def _isolated_settings(tmp: str):
     """Point settings.json at a temp dir, so the user's real preferences never leak in."""
     return mock.patch.object(settings, "SETTINGS_PATH", Path(tmp) / "settings.json")
@@ -834,6 +842,23 @@ class SettingsTest(unittest.TestCase):
             qlocale.system.return_value.name.return_value = "fr_FR"
             self.assertEqual(i18n._detect_lang(), "fr")  # no TypeError at startup
 
+    def test_a50_lang_accepts_a_region(self):
+        for value in ("es", "es_ES", "es-ES", "ES_es"):
+            with self.subTest(value=value), mock.patch.dict(os.environ, {"A50_LANG": value}):
+                self.assertEqual(i18n._detect_lang(), "es")
+
+    def test_put_never_leaves_a_truncated_file(self):
+        with tempfile.TemporaryDirectory() as tmp, _isolated_settings(tmp):
+            settings.put("theme", "dark")
+            with (
+                mock.patch.object(settings.os, "replace", side_effect=OSError("disk full")),
+                self.assertRaises(OSError),
+            ):
+                settings.put("language", "es")
+            self.assertEqual(settings.load(), {"theme": "dark"})  # old content intact
+            self.assertEqual(sorted(p.name for p in Path(tmp).rglob("*") if p.is_file()),
+                             ["settings.json"])  # no temp file left behind
+
     def test_language_priority(self):
         with (
             tempfile.TemporaryDirectory() as tmp,
@@ -854,6 +879,15 @@ class SettingsTest(unittest.TestCase):
 class ThemesTest(unittest.TestCase):
     def test_bundled_themes_are_listed(self):
         self.assertEqual(themes.available(), ["dark", "light"])
+
+    def test_auto_json_is_not_listed_twice(self):
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.object(themes, "THEMES_DIR", Path(tmp)),
+        ):
+            for name in ("auto", "dark"):
+                Path(tmp, f"{name}.json").write_text("{}")
+            self.assertEqual(themes.available(), ["dark"])
 
     def test_labels(self):
         with mock.patch.object(i18n, "LANG", "es"):
@@ -963,6 +997,36 @@ class MenuSlotsTest(unittest.TestCase):
         ):
             gui.A50Window._set_language(window, "es")
         window._lang_actions["auto"].setChecked.assert_called_with(True)
+        question.assert_not_called()
+
+    def test_unsaved_language_with_an_unknown_previous_one(self):
+        # "de" has no menu entry (hand-edited file, newer version...): roll back
+        # to Automatic instead of raising KeyError in the slot.
+        window = self._window()
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            _isolated_settings(tmp),
+            mock.patch.object(gui.QMessageBox, "warning"),
+        ):
+            settings.SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+            settings.SETTINGS_PATH.write_text('{"language": "de"}')
+            with mock.patch.object(gui.settings, "put", side_effect=OSError("disk full")):
+                gui.A50Window._set_language(window, "es")
+        window._lang_actions["auto"].setChecked.assert_called_with(True)
+
+    def test_no_restart_offered_when_the_language_does_not_change(self):
+        # Running in Spanish after declining a restart to French: picking
+        # Spanish again just saves it, it doesn't offer a pointless restart.
+        window = self._window()
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            _isolated_settings(tmp),
+            mock.patch.object(i18n, "LANG", "es"),
+            mock.patch.object(gui.QMessageBox, "question") as question,
+        ):
+            settings.put("language", "fr")
+            gui.A50Window._set_language(window, "es")
+            self.assertEqual(settings.get("language"), "es")
         question.assert_not_called()
 
     def test_failed_restart_warns_and_keeps_the_window(self):

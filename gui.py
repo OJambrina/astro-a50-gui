@@ -38,7 +38,7 @@ import settings
 import themes
 from base_info_dialog import format_base_info
 from eq_widget import EqTemplatesWidget
-from i18n import LANGUAGE_NAMES, gate_label, t
+from i18n import LANGUAGE_NAMES, gate_label, needs_restart, t
 from menu_install import install_entry, remove_entry
 from process_lock import (
     PID_FILE,
@@ -302,8 +302,10 @@ class A50Window(QMainWindow):
         if code == previous:
             return
         if not self._save_setting("language", code):
-            self._lang_actions[previous].setChecked(True)
+            self._lang_actions.get(previous, self._lang_actions["auto"]).setChecked(True)
             return
+        if not needs_restart(code):
+            return  # already running in that language (A50_LANG, declined restart...)
         msg = t("dlg_restart_msg")
         if self._dirty or self.eq.has_pending():
             msg += "\n\n" + t("dlg_restart_unsaved")
