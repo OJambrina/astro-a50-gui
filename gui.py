@@ -80,9 +80,10 @@ class A50Window(QMainWindow):
         "QPushButton:hover { background-color: #F57C00; } "
         "QPushButton:pressed { background-color: #E65100; }"
     )
+    # Palette roles, not fixed greys, so the muted look reads in any theme.
     _SYNC_STYLE_SYNCED = (
-        "QPushButton { background-color: transparent; color: #666; "
-        "padding: 6px 14px; border-radius: 4px; border: 1px solid #ccc; }"
+        "QPushButton { background-color: transparent; color: palette(placeholder-text); "
+        "padding: 6px 14px; border-radius: 4px; border: 1px solid palette(mid); }"
     )
 
     def __init__(self, device: Device):
