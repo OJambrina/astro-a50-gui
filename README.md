@@ -25,12 +25,27 @@ built on top of the [eh-fifty](https://github.com/tdryer/eh-fifty) library.
 
 ## Install
 
-Python 3.10+ and a virtualenv with [eh-fifty][eh-fifty] (the underlying HID
-library), PyUSB and PyQt6:
+### Arch Linux
+
+`packaging/aur/PKGBUILD` builds a package that installs the app, a menu entry
+and the udev rule below, from the latest release:
+
+```bash
+cd packaging/aur
+makepkg -si
+```
+
+Then launch **Astro A50 Config** from the menu, or `astro-a50-gui`. Re-plug the
+base station once so the udev rule applies.
+
+### From source
+
+Python 3.10+ and a virtualenv with PyUSB and PyQt6. [eh-fifty][eh-fifty], the
+underlying HID library, is vendored in `vendor/`:
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install eh-fifty pyusb PyQt6
+.venv/bin/pip install pyusb PyQt6
 ```
 
 [eh-fifty]: https://github.com/tdryer/eh-fifty
