@@ -1,4 +1,4 @@
-"""French / English translations for the GUI."""
+"""French / English / Spanish translations for the GUI."""
 import os
 
 from PyQt6.QtCore import QLocale
@@ -34,6 +34,10 @@ TRANSLATIONS = {
         "lbl_voice": "Voix",
         "lbl_mic_eq": "Mic EQ",
         "lbl_noise_gate": "Noise gate",
+        "gate_streaming": "STREAMING",
+        "gate_night": "NIGHT",
+        "gate_home": "HOME",
+        "gate_tournament": "TOURNAMENT",
         "lbl_alert_volume": "Volume des alertes",
         "lbl_mic_level": "Niveau micro",
         "lbl_sidetone": "Retour micro",
@@ -110,6 +114,10 @@ TRANSLATIONS = {
         "lbl_voice": "Voice",
         "lbl_mic_eq": "Mic EQ",
         "lbl_noise_gate": "Noise gate",
+        "gate_streaming": "STREAMING",
+        "gate_night": "NIGHT",
+        "gate_home": "HOME",
+        "gate_tournament": "TOURNAMENT",
         "lbl_alert_volume": "Alert volume",
         "lbl_mic_level": "Mic level",
         "lbl_sidetone": "Sidetone",
@@ -156,6 +164,86 @@ TRANSLATIONS = {
                     "Check that the base is plugged in via USB and the switch is on PC.",
         "na": "n/a",
     },
+    "es": {
+        "window_title": "Astro A50 — Configuración",
+        "grp_status": "Estado",
+        "grp_audio": "Audio",
+        "grp_mic": "Micrófono",
+        "grp_levels": "Niveles",
+        "grp_notifications": "Notificaciones",
+        "grp_eq_templates": "Preajustes de ecualizador",
+        "lbl_eq_slot": "EQ {n}",
+        "btn_apply": "Crear preajuste",
+        "btn_apply_busy": "Creando…",
+        "btn_save_eq": "Guardar",
+        "btn_save_eq_busy": "Guardando…",
+        "btn_reset_eq": "Revertir",
+        "btn_delete_eq": "Eliminar",
+        "dlg_delete_preset_title": "Eliminar preajuste",
+        "dlg_delete_preset_msg": "¿Eliminar «{name}»?",
+        "dlg_save_preset_title": "Nuevo preajuste",
+        "dlg_save_preset_label": "Nombre del nuevo preajuste:",
+        "dlg_overwrite_user": "El preajuste «{name}» ya existe. ¿Sobrescribirlo?",
+        "default_template_name": "Mi preajuste",
+        "err_name_builtin": "«{name}» es un preajuste integrado, elige otro nombre.",
+        "msg_template_applied": "Preajuste {name} → EQ {slot}",
+        "err_template_apply": "No se pudo aplicar: {error}",
+        "lbl_eq_preset": "Preajuste de EQ activo",
+        "lbl_balance": "Balance predeterminado",
+        "lbl_game": "Juego",
+        "lbl_voice": "Voz",
+        "lbl_mic_eq": "EQ del micrófono",
+        "lbl_noise_gate": "Bloqueador de ruido",
+        "gate_streaming": "STREAMING",
+        "gate_night": "NOCHE",
+        "gate_home": "CASA",
+        "gate_tournament": "TORNEO",
+        "lbl_alert_volume": "Volumen de alerta",
+        "lbl_mic_level": "Nivel de micrófono",
+        "lbl_sidetone": "Tono lateral",
+        "lbl_stream_mic": "Puerto de stream · Micrófono",
+        "lbl_stream_chat": "Puerto de stream · Audio de chat",
+        "lbl_stream_game": "Puerto de stream · Juego",
+        "lbl_stream_aux": "Puerto de stream · Aux",
+        "btn_refresh": "Actualizar",
+        "btn_save": "Sincronizar con dispositivo",
+        "btn_save_synced": "Sincronizado",
+        "btn_save_busy": "Sincronizando…",
+        "menu_tools": "&Herramientas",
+        "act_install_menu": "Añadir al menú de KDE",
+        "act_remove_menu": "Quitar del menú de KDE",
+        "act_base_info": "Información",
+        "info_hwid": "Hardware",
+        "info_mfg": "Fecha de fabricación",
+        "info_fw_base": "Versión FW estación base",
+        "info_fw_headset": "Versión FW auriculares",
+        "info_raw_title": "Respuestas en bruto",
+        "err_base_info": "No se pudo leer: {error}",
+        "act_quit": "&Salir",
+        "msg_menu_installed": "Añadido al menú de KDE",
+        "msg_menu_removed": "Quitado del menú de KDE",
+        "msg_menu_absent": "No hay nada que quitar",
+        "err_menu_install": "No se pudo añadir al menú: {error}",
+        "desktop_name": "Configuración del Astro A50",
+        "desktop_comment": "Configura los auriculares Astro A50 (EQ, balance, micrófono, bloqueador de ruido)",
+        "preset_n": "Preajuste {n}",
+        "headset_on": "Auriculares encendidos",
+        "headset_off": "Auriculares apagados",
+        "docked": "En la base",
+        "undocked": "Fuera de la base",
+        "charging": " (cargando)",
+        "base_unreachable": "● Estación base no accesible",
+        "msg_loaded": "Cargado",
+        "msg_eq_set": "Preajuste de EQ → {name}",
+        "msg_gate_set": "Bloqueador de ruido → {name}",
+        "msg_saved": "Ajustes guardados en la estación base",
+        "err_title": "Error",
+        "err_save": "No se pudo guardar: {error}",
+        "err_open_title": "Astro A50",
+        "err_open": "No se puede abrir la estación base del A50:\n{error}\n\n"
+                    "Comprueba que la estación base está conectada por USB y que el interruptor está en PC.",
+        "na": "n/d",
+    },
 }
 
 
@@ -163,12 +251,17 @@ def _detect_lang() -> str:
     override = os.environ.get("A50_LANG", "").lower()
     if override in TRANSLATIONS:
         return override
-    if QLocale.system().language() == QLocale.Language.French:
-        return "fr"
-    return "en"
+    lang = QLocale.system().name().split("_")[0]
+    return lang if lang in TRANSLATIONS else "en"
 
 
 LANG = _detect_lang()
+
+
+def gate_label(mode_name: str) -> str:
+    """Translated noise gate mode name, or the mode's own name if there is none."""
+    key = f"gate_{mode_name.lower()}"
+    return t(key) if key in TRANSLATIONS["en"] else mode_name
 
 
 def t(key: str, **kwargs) -> str:

@@ -21,7 +21,7 @@ built on top of the [eh-fifty](https://github.com/tdryer/eh-fifty) library.
   dispositif**. The button turns orange to signal pending changes.
 - KDE menu entry installation
 - Base station / headset firmware info dialog
-- French and English UI (autodetected via locale, override with `A50_LANG=fr|en`)
+- French, English and Spanish UI (autodetected via locale, override with `A50_LANG=fr|en|es`)
 
 ## Install
 
