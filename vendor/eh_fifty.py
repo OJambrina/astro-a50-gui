@@ -11,9 +11,8 @@ from types import TracebackType
 
 import usb.core
 import usb.util
-from hexdump import hexdump
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 LOGGER = logging.getLogger(__name__)
 
@@ -63,7 +62,7 @@ class Device:
             usb.util.dispose_resources(self._dev)
         self._dev = None
 
-    def __enter__(self) -> "Device":
+    def __enter__(self) -> Device:
         """Enter context manager."""
         return self
 
@@ -83,7 +82,7 @@ class Device:
         if payload:
             request.extend([len(payload), *payload])
         assert len(request) <= 64
-        LOGGER.debug("Writing %s request\n%s", request_type, hexdump(request))
+        LOGGER.debug("Writing %s request\n%s", request_type, _HexBytes(request))
         assert self._dev.write(_ENDPOINT_OUT, request, _TIMEOUT_MS) == len(request)
 
         try:
@@ -94,7 +93,7 @@ class Device:
             LOGGER.warning("Resetting device due to timeout")
             self._dev.reset()
             raise
-        LOGGER.debug("Received %s response\n%s", request_type, hexdump(resp))
+        LOGGER.debug("Received %s response\n%s", request_type, _HexBytes(resp))
         assert resp[0] == 0x02
         assert resp[1] in {_ResponseStatus.NO_RESPONSE.value, _ResponseStatus.OK.value}
         length = resp[2]
@@ -223,7 +222,7 @@ class Device:
         assert resp[0] == _CommandType.GET_EQ_PRESET_FREQ_AND_BW.value
         assert resp[1] == preset
         assert resp[2] == band
-        values = list(value for value, in struct.iter_unpack("<H", resp[3:]))
+        values = [value for (value,) in struct.iter_unpack("<H", resp[3:])]
         return EQPresetFreqAndBW(
             bandwidth=values[0],
             saved_bandwidth=values[1],
@@ -402,7 +401,6 @@ class DeviceNotConnected(Exception):
 
 
 class _CommandType(Enum):
-
     GET_DEVICE_INFO = 0x03
     GET_HEADSET_STATUS = 0x54
     GET_BASE_FIRMWARE_MINOR = 0x55
@@ -432,7 +430,6 @@ class _CommandType(Enum):
 
 
 class _ResponseStatus(Enum):
-
     NO_RESPONSE = 0
     ERROR = 1
     OK = 2
@@ -523,3 +520,29 @@ class HeadsetStatus:
 
     is_on: bool
     is_docked: bool
+
+
+@dataclass
+class _HexBytes:
+    """Byte sequences shown as hexdumps in debug logs, only formatted if emitted."""
+
+    data: bytes | list[int]
+
+    def __str__(self) -> str:
+        lines = []
+        previous = self.data[:0]
+        collapsed = False
+        for offset in range(0, len(self.data), 16):
+            chunk = self.data[offset : offset + 16]
+            if chunk == previous:
+                if not collapsed:
+                    lines.append("*")
+                    collapsed = True
+                continue
+            previous, collapsed = chunk, False
+            left = " ".join(f"{byte:02x}" for byte in chunk[:8])
+            right = " ".join(f"{byte:02x}" for byte in chunk[8:])
+            text = "".join(chr(byte) if 32 <= byte < 127 else "." for byte in chunk)
+            lines.append(f"{offset:08x}  {left:23}  {right:23}  |{text:16}|")
+        lines.append(f"{len(self.data):08x}")
+        return "\n".join(lines)
