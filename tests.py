@@ -135,10 +135,6 @@ class I18nTest(unittest.TestCase):
                 self.assertEqual(i18n.t("err_title"), "Error")
         # Restore — mock.patch.dict resets dict; safe.
 
-    def test_every_fr_key_has_an_en_counterpart(self):
-        missing = set(i18n.TRANSLATIONS["fr"]) - set(i18n.TRANSLATIONS["en"])
-        self.assertEqual(missing, set(), f"keys missing in EN: {missing}")
-
     def test_every_language_has_the_same_keys_as_en(self):
         reference = set(i18n.TRANSLATIONS["en"])
         for lang, strings in i18n.TRANSLATIONS.items():
@@ -146,7 +142,8 @@ class I18nTest(unittest.TestCase):
                 self.assertEqual(set(strings), reference)
 
     def test_placeholders_match_en(self):
-        # A translation missing `{name}` or `{error}` would raise at runtime.
+        # A misspelled or extra placeholder raises KeyError at runtime; a missing
+        # one silently drops the value from the message.
         def fields(text: str) -> set[str]:
             return {f for _, f, _, _ in string.Formatter().parse(text) if f}
 
@@ -161,13 +158,19 @@ class I18nTest(unittest.TestCase):
             self.assertEqual(i18n.t("gate_tournament"), "TORNEO")
         with mock.patch.dict(os.environ, {"A50_LANG": "es"}):
             self.assertEqual(i18n._detect_lang(), "es")
-        spanish = i18n.QLocale.Language.Spanish
         with (
             mock.patch.dict(os.environ, {"A50_LANG": ""}),
             mock.patch.object(i18n, "QLocale") as qlocale,
         ):
-            qlocale.system.return_value.language.return_value = spanish
+            qlocale.system.return_value.name.return_value = "es_ES"
             self.assertEqual(i18n._detect_lang(), "es")
+            qlocale.system.return_value.name.return_value = "de_DE"
+            self.assertEqual(i18n._detect_lang(), "en")  # unsupported: English
+
+    def test_gate_labels_fall_back_to_the_mode_name(self):
+        with mock.patch.object(i18n, "LANG", "es"):
+            self.assertEqual(i18n.gate_label("HOME"), "CASA")
+            self.assertEqual(i18n.gate_label("NEW_MODE"), "NEW_MODE")
 
 
 class EqWidgetHasPendingTest(unittest.TestCase):

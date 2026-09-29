@@ -199,7 +199,7 @@ TRANSLATIONS = {
         "gate_home": "CASA",
         "gate_tournament": "TORNEO",
         "lbl_alert_volume": "Volumen de alerta",
-        "lbl_mic_level": "Nivel de micrófono USB",
+        "lbl_mic_level": "Nivel de micrófono",
         "lbl_sidetone": "Tono lateral",
         "lbl_stream_mic": "Puerto de stream · Micrófono",
         "lbl_stream_chat": "Puerto de stream · Audio de chat",
@@ -247,20 +247,21 @@ TRANSLATIONS = {
 }
 
 
-_LOCALE_LANGS = {
-    QLocale.Language.French: "fr",
-    QLocale.Language.Spanish: "es",
-}
-
-
 def _detect_lang() -> str:
     override = os.environ.get("A50_LANG", "").lower()
     if override in TRANSLATIONS:
         return override
-    return _LOCALE_LANGS.get(QLocale.system().language(), "en")
+    lang = QLocale.system().name().split("_")[0]
+    return lang if lang in TRANSLATIONS else "en"
 
 
 LANG = _detect_lang()
+
+
+def gate_label(mode_name: str) -> str:
+    """Translated noise gate mode name, or the mode's own name if there is none."""
+    key = f"gate_{mode_name.lower()}"
+    return t(key) if key in TRANSLATIONS["en"] else mode_name
 
 
 def t(key: str, **kwargs) -> str:

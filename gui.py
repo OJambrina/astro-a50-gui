@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
 
 from base_info_dialog import format_base_info
 from eq_widget import EqTemplatesWidget
-from i18n import t
+from i18n import gate_label, t
 from menu_install import install_entry, remove_entry
 from process_lock import (
     PID_FILE,
@@ -198,7 +198,7 @@ class A50Window(QMainWindow):
                 icon = QIcon.fromTheme(theme_name)
                 if not icon.isNull():
                     break
-            self.cmb_gate.addItem(icon, t(f"gate_{m.name.lower()}"), m)
+            self.cmb_gate.addItem(icon, gate_label(m.name), m)
         self.cmb_gate.currentIndexChanged.connect(self._on_gate_changed)
         layout.addWidget(self.cmb_gate, 0, 1)
         return box
