@@ -477,7 +477,12 @@ class A50Window(QMainWindow):
     def _apply_sync_style(self):
         if not hasattr(self, "btn_save"):
             return
-        if self._dirty:
+        # _dirty covers the window's own settings; the EQ widget knows its own
+        # pending edits, so undoing them (Reset) turns Sync back (issue #22).
+        dirty = self._dirty or self.eq.has_pending()
+        # In sync, the greyed button is also disabled: nothing to write.
+        self.btn_save.setEnabled(dirty)
+        if dirty:
             self.btn_save.setText(t("btn_save"))
             self.btn_save.setStyleSheet(self._SYNC_STYLE_DIRTY)
         else:
@@ -543,9 +548,9 @@ class A50Window(QMainWindow):
         self._dirty = False
         self._apply_sync_style()
 
-    def _on_eq_dirty_changed(self, is_dirty: bool):
-        if is_dirty and not self._loading:
-            self._mark_dirty()
+    def _on_eq_dirty_changed(self, _is_dirty: bool):
+        if not self._loading:
+            self._apply_sync_style()
 
     def refresh_status(self):
         """Synchronous status refresh (used at startup and on user Rafraîchir)."""
@@ -650,7 +655,6 @@ class A50Window(QMainWindow):
             QMessageBox.warning(self, t("err_title"), t("err_save", error=e))
         finally:
             QApplication.restoreOverrideCursor()
-            self.btn_save.setEnabled(True)
             self._apply_sync_style()
 
     def changeEvent(self, event):

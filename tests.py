@@ -1837,6 +1837,29 @@ class SweepRegressionTest(unittest.TestCase):
             gui.A50Window._on_save(window)
         window.device.set_default_balance.assert_called_once_with(200)
 
+    def test_sync_turns_back_to_synced_once_eq_edits_are_undone(self):
+        # Issue #22: an EQ edit undone with Reset left Sync orange.
+        window = mock.MagicMock()
+        window._loading = False
+        window._dirty = False
+        window._SYNC_STYLE_DIRTY = gui.A50Window._SYNC_STYLE_DIRTY
+        window._SYNC_STYLE_SYNCED = gui.A50Window._SYNC_STYLE_SYNCED
+        window._apply_sync_style = lambda: gui.A50Window._apply_sync_style(window)
+        window._mark_dirty = lambda: gui.A50Window._mark_dirty(window)
+        window.eq.has_pending.return_value = True
+        gui.A50Window._on_eq_dirty_changed(window, True)
+        window.btn_save.setStyleSheet.assert_called_with(gui.A50Window._SYNC_STYLE_DIRTY)
+        window.btn_save.setEnabled.assert_called_with(True)
+        window.eq.has_pending.return_value = False  # Reset: nothing left to sync
+        gui.A50Window._on_eq_dirty_changed(window, False)
+        window.btn_save.setStyleSheet.assert_called_with(gui.A50Window._SYNC_STYLE_SYNCED)
+        # Nothing to sync: the greyed button can't be pressed either.
+        window.btn_save.setEnabled.assert_called_with(False)
+        # A change of the window's own settings still keeps it orange.
+        gui.A50Window._mark_dirty(window)
+        gui.A50Window._on_eq_dirty_changed(window, False)
+        window.btn_save.setStyleSheet.assert_called_with(gui.A50Window._SYNC_STYLE_DIRTY)
+
     def test_gate_change_announces_nothing_before_sync(self):
         window = mock.MagicMock()
         window._loading = False
