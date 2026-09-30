@@ -289,6 +289,14 @@ class A50Window(QMainWindow):
         tools.addAction(act_info)
 
         tools.addSeparator()
+        act_import = QAction(t("act_import_presets"), self)
+        act_import.triggered.connect(self._import_presets)
+        tools.addAction(act_import)
+        act_export = QAction(t("act_export_preset"), self)
+        act_export.triggered.connect(self._export_preset)
+        tools.addAction(act_export)
+
+        tools.addSeparator()
         tools.addMenu(self._build_language_menu(tools))
         tools.addMenu(self._build_theme_menu(tools))
 
@@ -324,6 +332,35 @@ class A50Window(QMainWindow):
             menu.addAction(action)
             self._lang_actions[code] = action
         return menu
+
+    def _import_presets(self):
+        try:
+            imported = self.eq.import_presets()
+            if imported:
+                if not self.eq.has_pending():
+                    # Re-read the EQ slots and the active one first, so slots
+                    # already holding these presets show their names. Only the
+                    # EQ part, and only without unsynced EQ edits, which a
+                    # reload would discard.
+                    with self._device_lock:
+                        self.eq.reload_under_lock(safe(self.device.get_active_eq_preset))
+                # Importing a preset means using it: load the first one into
+                # the selected EQ slot, pending until synced.
+                self.eq.load_into_selected_slot(imported[0])
+        except Exception as e:
+            QMessageBox.warning(self, t("err_title"), t("err_import", name="", error=e))
+            return
+        if imported:
+            self.statusBar().showMessage(t("msg_imported", n=len(imported)), 4000)
+
+    def _export_preset(self):
+        try:
+            name = self.eq.export_preset()
+        except Exception as e:
+            QMessageBox.warning(self, t("err_title"), t("err_export", error=e))
+            return
+        if name:
+            self.statusBar().showMessage(t("msg_exported", name=name), 4000)
 
     def _save_setting(self, key: str, value) -> bool:
         """Store a preference; warn instead of crashing if ~/.config can't be written."""

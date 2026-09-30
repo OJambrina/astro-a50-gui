@@ -21,6 +21,7 @@ built on top of the [eh-fifty](https://github.com/tdryer/eh-fifty) library.
   dispositif**. The button turns orange to signal pending changes.
 - KDE menu entry installation
 - Base station / headset firmware info dialog
+- Import / export EQ presets as Astro Command Center `.astroeq` files (Tools menu), to move presets between Windows and Linux
 - French, English and Spanish UI (autodetected via locale, override with `A50_LANG=fr|en|es`)
 - Language and colour theme selectable from the Tools menu: Automatic (follows the desktop's colours), Light and Dark (official Breeze palettes). Themes are colour palettes in `themes/` (JSON, Qt palette role → colour) that keep the desktop's look and only change its colours: drop in a new file and it shows up in the menu
 

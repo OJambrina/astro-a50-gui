@@ -22,6 +22,7 @@ Public surface used by the main window:
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QIcon
@@ -29,6 +30,7 @@ from PyQt6.QtWidgets import (
     QApplication,
     QButtonGroup,
     QComboBox,
+    QFileDialog,
     QGraphicsOpacityEffect,
     QGridLayout,
     QGroupBox,
@@ -39,6 +41,7 @@ from PyQt6.QtWidgets import (
     QRadioButton,
 )
 
+import astroeq
 from device_handle import DeviceHandle
 from eq_meter import _EqMeter
 from i18n import t
@@ -444,17 +447,7 @@ class EqTemplatesWidget(QGroupBox):
             self._refresh_combos(select={slot: name})
         # Only this slot changed on the device: a global reload would drop the
         # other slots' unsynced edits and forget the device's active slot.
-        # Another slot showing this preset (Save of an existing one) takes its
-        # new values and needs a Sync, unless it holds unsynced edits of its own.
-        for s, combo in self.template_combos.items():
-            if s == slot or combo.currentData() != name or not self._slot_bands[s]:
-                continue
-            if not self._slot_pending[s]:
-                self._slot_bands[s] = [(new_bands[b][0], gain[b - 1]) for b in range(1, 6)]
-                self._slot_pending[s] = {1, 2, 3, 4, 5}
-            self._slot_modified[s] = {
-                b for b in range(1, 6) if self._is_band_off_template(s, b)
-            }
+        self._show_new_values(name, skip=slot)
         self._slot_modified[slot] = set()
         QApplication.restoreOverrideCursor()
         btn.setText(t(idle_key))
@@ -467,12 +460,13 @@ class EqTemplatesWidget(QGroupBox):
             # The device holds the preset; only the library file failed.
             QMessageBox.warning(self, t("err_title"), t("err_template_save", error=e))
 
-    def _prompt_new_template_name(self) -> str | None:
-        existing = set(self._all_templates())
-        i = 1
-        while f"{t('default_template_name')} {i}" in existing:
-            i += 1
-        suggestion = f"{t('default_template_name')} {i}"
+    def _prompt_new_template_name(self, suggestion: str | None = None) -> str | None:
+        if suggestion is None:
+            existing = set(self._all_templates())
+            i = 1
+            while f"{t('default_template_name')} {i}" in existing:
+                i += 1
+            suggestion = f"{t('default_template_name')} {i}"
         while True:
             name, ok = QInputDialog.getText(
                 self,
@@ -502,6 +496,119 @@ class EqTemplatesWidget(QGroupBox):
                     continue
             return name
 
+    # ------------------------------------------ Command Center files
+
+    def import_presets(self) -> list[str]:
+        """Tools menu: pick .astroeq files exported by Astro Command Center."""
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, t("act_import_presets"), str(Path.home()), t("filter_astroeq"))
+        return self.import_files(paths)
+
+    def import_files(self, paths) -> list[str]:
+        """Add each .astroeq file as a user template named after the file.
+
+        Command Center shows imported presets by file name, so we do the same.
+        A preset identical to an existing one (builtin or user) is reused
+        silently; the same name with different values opens the usual name
+        dialog. Returns the imported names.
+        """
+        imported = []
+        overwritten = []
+        added = False
+        for path in map(Path, paths):
+            try:
+                template = astroeq.parse(path.read_text(encoding="utf-8-sig"))
+            except (OSError, ValueError) as e:
+                QMessageBox.warning(self, t("err_title"),
+                                    t("err_import", name=path.name, error=e))
+                continue
+            name = path.stem.strip()
+            if self._all_templates().get(name) == template:
+                imported.append(name)  # already there, identical: nothing to ask
+                continue
+            if (not name or name in self._all_templates()
+                    or len(name.encode()) > MAX_NAME_BYTES):
+                name = self._prompt_new_template_name(suggestion=name or None)
+                if name is None:
+                    continue
+            if name in self._user_templates:
+                overwritten.append(name)  # the name dialog confirmed it
+            self._user_templates[name] = template
+            imported.append(name)
+            added = True
+        if added:
+            try:
+                _save_user_templates(self._user_templates)
+            except OSError as e:
+                QMessageBox.warning(self, t("err_title"), t("err_template_save", error=e))
+            self._refresh_combos()
+            for name in overwritten:
+                self._show_new_values(name)
+            if overwritten:
+                self._refresh_meter()
+                self._update_apply_enabled()
+                self._emit_dirty_if_changed()
+        return imported
+
+    def load_into_selected_slot(self, name: str) -> None:
+        """Put a template in the selected EQ slot, as if picked in its combo:
+        it shows on the meter and stays pending until synced."""
+        combo = self.template_combos[self._selected_slot]
+        idx = combo.findData(name)
+        if idx < 0:
+            return
+        if idx == combo.currentIndex():
+            # Qt emits nothing for the current index: reapply it, or the slot's
+            # edited bands would stay while the import reports it loaded.
+            self._on_template_combo_changed(self._selected_slot)
+        else:
+            combo.setCurrentIndex(idx)
+
+    def export_preset(self) -> str | None:
+        """Tools menu: save a template as a .astroeq file for Command Center."""
+        names = sorted(self._all_templates(), key=str.casefold)
+        current = self.template_combos[self._selected_slot].currentData()
+        name, ok = QInputDialog.getItem(
+            self, t("act_export_preset"), t("dlg_export_label"), names,
+            names.index(current) if current in names else 0, False)
+        if not ok:
+            return None
+        default = Path.home() / (name.replace("/", "-") + astroeq.SUFFIX)
+        dialog = QFileDialog(self, t("act_export_preset"), str(default), t("filter_astroeq"))
+        dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptSave)
+        # The dialog adds the suffix itself, so its overwrite check sees the
+        # name that is actually written.
+        dialog.setDefaultSuffix(astroeq.SUFFIX.lstrip("."))
+        if not dialog.exec():
+            return None
+        path = dialog.selectedFiles()[0]
+        try:
+            self.export_file(name, path)
+        except OSError as e:
+            QMessageBox.warning(self, t("err_title"), t("err_export", error=e))
+            return None
+        return name
+
+    def export_file(self, name: str, path) -> None:
+        text = astroeq.dump(name, self._all_templates()[name])
+        Path(path).write_text(text, encoding="utf-8", newline="")
+
+    def _show_new_values(self, name: str, skip: int | None = None) -> None:
+        """Another slot showing the user preset `name`, just redefined, takes its
+        new values and needs a Sync, unless it holds unsynced edits of its own."""
+        tpl = self._user_templates[name]
+        for s, combo in self.template_combos.items():
+            if s == skip or combo.currentData() != name or not self._slot_bands[s]:
+                continue
+            if not self._slot_pending[s]:
+                self._slot_bands[s] = [
+                    (tpl["bands"][b][0], tpl["gain"][b - 1]) for b in range(1, 6)
+                ]
+                self._slot_pending[s] = {1, 2, 3, 4, 5}
+            self._slot_modified[s] = {
+                b for b in range(1, 6) if self._is_band_off_template(s, b)
+            }
+
     def _refresh_combos(self, select: dict[int, str] | None = None) -> None:
         select = select or {}
         all_names = sorted(self._all_templates(), key=str.casefold)
@@ -512,6 +619,11 @@ class EqTemplatesWidget(QGroupBox):
             for name in all_names:
                 combo.addItem(self._template_icon(name), name, name)
             self._sync_device_item(slot)
+            device = self._slot_device.get(slot)
+            if current == self.ON_DEVICE and combo.findData(current) < 0 and device:
+                # Its name became a template (an import): show the slot under it
+                # instead of falling back to the first template.
+                current = device["name"]
             if current is not None:
                 idx = combo.findData(current)
                 if idx >= 0:

@@ -7,10 +7,12 @@ import json
 import os
 import string
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
 
+import astroeq
 import gui
 import i18n
 import settings
@@ -18,6 +20,7 @@ import templates
 import themes
 from base_info_dialog import format_base_info
 from eq_widget import EqTemplatesWidget
+from vendor import eh_fifty
 from vendor.eh_fifty import DeviceInfo, FirmwareVersion
 
 
@@ -305,7 +308,7 @@ class _MockCombo:
         self.set_current_index_log = []  # (idx, was_blocked)
 
     def currentData(self):
-        if not self._items:
+        if not self._items or self._current < 0:
             return None
         return self._items[self._current][1]
 
@@ -329,6 +332,15 @@ class _MockCombo:
         self._items.insert(idx, (text, data))
         if self._items and idx <= self._current and len(self._items) > 1:
             self._current += 1
+
+    def clear(self):
+        self._items = []
+        self._current = -1
+
+    def addItem(self, _icon, text, data):
+        self._items.append((text, data))
+        # Qt selects the first item added to an empty combo.
+        self._current = max(self._current, 0)
 
     def removeItem(self, idx):
         if 0 <= idx < len(self._items):
@@ -1201,6 +1213,224 @@ class MenuSlotsTest(unittest.TestCase):
         window.statusBar.return_value.showMessage.assert_called_once()
 
 
+# A preset exported by Astro Command Center, byte for byte (BOM and CRLF included).
+_ARCTURUS = (
+    "\ufeff[General]\r\nName=ZaliaS Arcturus[2019]\r\n\r\n[Eq_Bands]\r\n"
+    "Eq_Band_1=5\r\nEq_Band_2=6\r\nEq_Band_3=4\r\nEq_Band_4=6\r\nEq_Band_5=5\r\n"
+    "Eq_Freq_Band_1=100\r\nEq_Freq_Band_2=1775\r\nEq_Freq_Band_3=4664\r\n"
+    "Eq_Freq_Band_4=8210\r\nEq_Freq_Band_5=11125\r\n"
+    "Eq_Bandwidth_2=2.2\r\nEq_Bandwidth_3=2\r\nEq_Bandwidth_4=2.2\r\n\r\n"
+)
+_ARCTURUS_TEMPLATE = {
+    "gain": [5, 6, 4, 6, 5],
+    "bands": {1: (100, 0), 2: (1775, 9011), 3: (4664, 8192), 4: (8210, 9011), 5: (11125, 0)},
+}
+
+
+class AstroEqTest(unittest.TestCase):
+    def test_parses_a_command_center_file(self):
+        self.assertEqual(astroeq.parse(_ARCTURUS), _ARCTURUS_TEMPLATE)
+
+    def test_limits_match_eh_fifty(self):
+        self.assertEqual(
+            astroeq.GAIN_RANGE, (eh_fifty._EQ_PRESET_MIN_GAIN, eh_fifty._EQ_PRESET_MAX_GAIN)
+        )
+        self.assertEqual(
+            astroeq.FREQ_RANGE,
+            (eh_fifty._EQ_PRESET_MIN_CENTER_FREQ, eh_fifty._EQ_PRESET_MAX_CENTER_FREQ),
+        )
+        low, high = astroeq.BANDWIDTH_RANGE
+        self.assertEqual(eh_fifty._EQ_PRESET_MIN_BANDWIDTH, int(4096 * low))
+        self.assertEqual(eh_fifty._EQ_PRESET_MAX_BANDWIDTH, int(4096 * high))
+
+    def test_rejects_invalid_files(self):
+        broken = {
+            "gain out of range": _ARCTURUS.replace("Eq_Band_1=5", "Eq_Band_1=8"),
+            "frequency too low": _ARCTURUS.replace("Eq_Freq_Band_1=100", "Eq_Freq_Band_1=79"),
+            "bandwidth too wide": _ARCTURUS.replace("Eq_Bandwidth_3=2", "Eq_Bandwidth_3=3.1"),
+            "missing value": _ARCTURUS.replace("Eq_Band_2=6\r\n", ""),
+            "not a number": _ARCTURUS.replace("Eq_Band_2=6", "Eq_Band_2=loud"),
+            "no EQ section": "[General]\nName=x\n",
+            "not INI at all": "hello",
+        }
+        for case, text in broken.items():
+            with self.subTest(case=case), self.assertRaises(ValueError):
+                astroeq.parse(text)
+
+    def test_round_trip(self):
+        # Builtin templates and an imported one survive dump -> parse unchanged,
+        # and the output uses Command Center's own layout.
+        cases = {**templates._EQ_TEMPLATES, "ARCTURUS": _ARCTURUS_TEMPLATE}
+        for name, tpl in cases.items():
+            with self.subTest(name=name):
+                expected = {"gain": list(tpl["gain"]), "bands": dict(tpl["bands"])}
+                self.assertEqual(astroeq.parse(astroeq.dump(name, tpl)), expected)
+        text = astroeq.dump("ARCTURUS", _ARCTURUS_TEMPLATE)
+        self.assertIn("Eq_Bandwidth_2=2.2\r\n", text)
+        self.assertIn("Eq_Bandwidth_3=2\r\n", text)
+
+
+class EqWidgetImportExportTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name)
+        patcher = mock.patch.object(templates, "USER_TEMPLATES_FILE", self.dir / "user.json")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _make(self):
+        widget = EqTemplatesWidget.__new__(EqTemplatesWidget)
+        widget._user_templates = {}
+        widget._refresh_combos = mock.MagicMock()
+        return widget
+
+    def test_import_adds_presets_named_after_their_files(self):
+        (self.dir / "ARCTURUS.astroeq").write_text(_ARCTURUS, encoding="utf-8")
+        (self.dir / "broken.astroeq").write_text("hello", encoding="utf-8")
+        widget = self._make()
+        with mock.patch("eq_widget.QMessageBox.warning") as warning:
+            imported = widget.import_files([self.dir / "ARCTURUS.astroeq", self.dir / "broken.astroeq"])
+        self.assertEqual(imported, ["ARCTURUS"])
+        warning.assert_called_once()  # the broken file is reported, not fatal
+        saved = templates._load_user_templates()
+        self.assertEqual(saved["ARCTURUS"], _ARCTURUS_TEMPLATE)
+        widget._refresh_combos.assert_called_once()
+
+    def test_reimporting_an_identical_preset_asks_nothing(self):
+        (self.dir / "ARCTURUS.astroeq").write_text(_ARCTURUS, encoding="utf-8")
+        widget = self._make()
+        widget._user_templates = {"ARCTURUS": _ARCTURUS_TEMPLATE}
+        widget._prompt_new_template_name = mock.MagicMock()
+        self.assertEqual(widget.import_files([self.dir / "ARCTURUS.astroeq"]), ["ARCTURUS"])
+        widget._prompt_new_template_name.assert_not_called()
+        widget._refresh_combos.assert_not_called()  # nothing new to save or list
+
+    def test_import_name_clash_asks_for_another_name(self):
+        (self.dir / "MEDIA.astroeq").write_text(_ARCTURUS, encoding="utf-8")
+        widget = self._make()
+        widget._prompt_new_template_name = mock.MagicMock(return_value="MEDIA 2")
+        self.assertEqual(widget.import_files([self.dir / "MEDIA.astroeq"]), ["MEDIA 2"])
+        widget._prompt_new_template_name.assert_called_once_with(suggestion="MEDIA")
+
+    def test_import_rereads_the_eq_slots_unless_edits_are_pending(self):
+        # After an import, slots already holding those presets must show their
+        # names without pressing Refresh, but unsynced EQ edits are kept.
+        for pending, reloads in ((False, 1), (True, 0)):
+            with self.subTest(pending=pending):
+                window = mock.MagicMock()
+                window._device_lock = threading.RLock()
+                window.eq.import_presets.return_value = ["ARCTURUS"]
+                window.eq.has_pending.return_value = pending
+                window.device.get_active_eq_preset.return_value = 2
+                gui.A50Window._import_presets(window)
+                self.assertEqual(window.eq.reload_under_lock.call_count, reloads)
+                if reloads:
+                    window.eq.reload_under_lock.assert_called_with(2)
+                # Either way, the first imported preset goes into the selected slot.
+                window.eq.load_into_selected_slot.assert_called_once_with("ARCTURUS")
+
+    def test_load_into_selected_slot_picks_it_in_that_combo(self):
+        widget = self._make()
+        widget._selected_slot = 2
+        widget.template_combos = {s: mock.MagicMock() for s in (1, 2, 3)}
+        widget.template_combos[2].findData.return_value = 4
+        widget.load_into_selected_slot("PURE")
+        widget.template_combos[2].setCurrentIndex.assert_called_once_with(4)
+        widget.template_combos[1].setCurrentIndex.assert_not_called()
+        widget.template_combos[2].findData.return_value = -1  # unknown name: no change
+        widget.load_into_selected_slot("NOPE")
+        widget.template_combos[2].setCurrentIndex.assert_called_once()
+
+    def test_load_into_selected_slot_reapplies_the_preset_already_shown(self):
+        # setCurrentIndex on the current index emits nothing: the slot's edited
+        # bands would stay while the import says it was loaded.
+        widget = self._make()
+        widget._selected_slot = 2
+        widget.template_combos = {s: mock.MagicMock() for s in (1, 2, 3)}
+        widget.template_combos[2].findData.return_value = 4
+        widget.template_combos[2].currentIndex.return_value = 4
+        widget._on_template_combo_changed = mock.MagicMock()
+        widget.load_into_selected_slot("ARCTURUS")
+        widget._on_template_combo_changed.assert_called_once_with(2)
+
+    def test_export_lets_the_dialog_add_the_suffix(self):
+        # The dialog's overwrite check must see the final name, suffix included.
+        widget = self._make()
+        widget._selected_slot = 1
+        widget.template_combos = {1: mock.MagicMock()}
+        path = self.dir / "ARCTURUS.ASTROEQ"
+        with (mock.patch("eq_widget.QInputDialog.getItem", return_value=("MEDIA", True)),
+              mock.patch("eq_widget.QFileDialog") as dialog_cls):
+            dialog = dialog_cls.return_value
+            dialog.exec.return_value = True
+            dialog.selectedFiles.return_value = [str(path)]
+            self.assertEqual(widget.export_preset(), "MEDIA")
+        dialog.setDefaultSuffix.assert_called_once_with("astroeq")
+        self.assertTrue(path.exists())  # no second suffix on an upper-case one
+
+    def _reloaded(self, device_data, user_templates=None):
+        widget = EqWidgetReloadUnderLockTest._make_widget(
+            self, device_data, user_templates=user_templates)
+        widget.reload_under_lock(active_eq_preset=1)
+        return widget
+
+    def test_import_of_the_base_preset_keeps_it_selected(self):
+        # The "(on the base)" entry goes once its name is a template: the slot
+        # must pick that template, not fall back to the first one and rename
+        # the device's slot on Sync.
+        arc = dict(_ARCTURUS_ON_BASE)
+        widget = self._reloaded({1: dict(arc), 2: dict(arc), 3: dict(arc)})
+        widget._on_band_modified(2, 0)  # unsynced edit: no re-read after import
+        path = self.dir / "ARCTURUS.astroeq"
+        path.write_text(astroeq.dump("ARCTURUS", {"gain": arc["gain"], "bands": arc["bands"]}))
+        widget.import_files([path])
+        self.assertEqual(widget.template_combos[1].currentData(), "ARCTURUS")
+        widget.push_pending_to_device()
+        widget.device.set_eq_preset_name.assert_called_with(1, "ARCTURUS")
+
+    def test_import_overwriting_a_preset_updates_the_slots_showing_it(self):
+        mine = {"gain": [0] * 5, "bands": dict(templates._EQ_TEMPLATES["MEDIA"]["bands"])}
+        arc = dict(_ARCTURUS_ON_BASE)
+        widget = self._reloaded({1: dict(arc), 2: dict(mine, name="MINE"), 3: dict(arc)},
+                                user_templates={"MINE": dict(mine)})
+        path = self.dir / "MINE.astroeq"
+        path.write_text(astroeq.dump("MINE", dict(mine, gain=[3] * 5)))
+        with mock.patch.object(EqTemplatesWidget, "_prompt_new_template_name",
+                               return_value="MINE"):
+            widget.import_files([path])
+        self.assertEqual([g for _f, g in widget._slot_bands[2]], [3] * 5)
+        self.assertEqual(widget._slot_pending[2], {1, 2, 3, 4, 5})
+
+    def test_import_of_a_too_long_file_name_asks_for_another(self):
+        widget = self._make()
+        path = self.dir / ("é" * 30 + ".astroeq")  # 60 bytes, over the 58 a slot holds
+        path.write_text(astroeq.dump("x", templates._EQ_TEMPLATES["MEDIA"]))
+        with mock.patch.object(EqTemplatesWidget, "_prompt_new_template_name",
+                               return_value="Short") as prompt:
+            self.assertEqual(widget.import_files([path]), ["Short"])
+        prompt.assert_called_once()
+
+    def test_import_reports_a_failed_library_save_as_the_other_saves_do(self):
+        from i18n import t
+        widget = self._make()
+        path = self.dir / "NEW.astroeq"
+        path.write_text(astroeq.dump("NEW", templates._EQ_TEMPLATES["MEDIA"]))
+        with (mock.patch("eq_widget._save_user_templates", side_effect=OSError("ro")),
+              mock.patch("eq_widget.QMessageBox") as box):
+            widget.import_files([path])
+        self.assertIn(t("err_template_save", error="ro"), str(box.warning.call_args))
+
+    def test_export_writes_a_file_command_center_layout(self):
+        widget = self._make()
+        path = self.dir / "MEDIA.astroeq"
+        widget.export_file("MEDIA", path)
+        raw = path.read_bytes()
+        self.assertIn(b"\r\n", raw)
+        media = templates._EQ_TEMPLATES["MEDIA"]
+        self.assertEqual(
+            astroeq.parse(raw.decode()), {"gain": media["gain"], "bands": media["bands"]}
+        )
 class SweepRegressionTest(unittest.TestCase):
     """Regressions for the bugs found by the sweep of main at 5800fc1."""
 
