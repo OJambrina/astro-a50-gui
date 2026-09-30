@@ -1413,7 +1413,7 @@ class SweepRegressionTest(unittest.TestCase):
         import menu_install
         with tempfile.TemporaryDirectory() as tmp:
             apps = Path(tmp)
-            (apps / "a.desktop").write_text("x")
+            (apps / "a.desktop").write_text("[Desktop Entry]\nExec=python /src/gui.py\n")
             with (mock.patch.object(Path, "unlink", side_effect=PermissionError("ro")),
                   self.assertRaises(OSError)):
                 menu_install.remove_entry(apps, apps / "a.desktop", apps / "old.desktop")
@@ -1428,15 +1428,27 @@ class SweepRegressionTest(unittest.TestCase):
             # The user's own data dir may be listed too: its entry is not the package's.
             dirs = f"{user}:/nonexistent:{system}"
             with mock.patch.dict(os.environ, {"XDG_DATA_DIRS": dirs}):
-                self.assertEqual(menu_install.install_entry(*args, "p", Path("/x.py")),
+                self.assertEqual(menu_install.install_entry(*args, "p", Path("/src/gui.py")),
                                  t("msg_menu_installed"))
                 self.assertEqual(menu_install.remove_entry(*args), t("msg_menu_removed"))
                 (Path(system) / "applications").mkdir()
                 (Path(system) / "applications" / "a.desktop").write_text("x")
-                self.assertEqual(menu_install.install_entry(*args, "p", Path("/x.py")),
+                self.assertEqual(menu_install.install_entry(*args, "p", Path("/src/gui.py")),
                                  t("msg_menu_installed_system"))
                 self.assertEqual(menu_install.remove_entry(*args), t("msg_menu_removed_system"))
                 self.assertEqual(menu_install.remove_entry(*args), t("msg_menu_absent_system"))
+
+    def test_remove_keeps_the_menu_editors_copy_of_the_package_entry(self):
+        # The menu editor saves an edited package entry under the same file name.
+        import menu_install
+        with tempfile.TemporaryDirectory() as tmp:
+            apps = Path(tmp)
+            edited = apps / "a.desktop"
+            edited.write_text("[Desktop Entry]\nName=Mine\nExec=astro-a50-gui\n")
+            (apps / "old.desktop").write_text("[Desktop Entry]\nExec=python /src/gui.py\n")
+            menu_install.remove_entry(apps, edited, apps / "old.desktop")
+            self.assertTrue(edited.exists())
+            self.assertFalse((apps / "old.desktop").exists())
 
     # --- process_lock.py ----------------------------------------------
 

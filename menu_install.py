@@ -51,7 +51,9 @@ def remove_entry(
     message indicating whether anything was removed."""
     removed = False
     for path in (desktop_file, legacy_desktop_file):
-        if path.exists():
+        # The menu editor saves an edited package entry under desktop_file's
+        # name: only an entry this app wrote is removed.
+        if path.exists() and (path == legacy_desktop_file or own_entry(path)):
             path.unlink()  # OSError reaches the caller: the entry is still there
             removed = True
     if removed:
@@ -78,9 +80,11 @@ def _system_entry(apps_dir: Path, name: str) -> Path | None:
     the user entry shadows while it exists. `apps_dir`, the user's own, is
     skipped: some sessions list it in XDG_DATA_DIRS too."""
     dirs = os.environ.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share"
+    own = apps_dir.resolve()
     for d in dirs.split(":"):
         path = Path(d) / "applications" / name
-        if d and path.parent.resolve() != apps_dir.resolve() and path.is_file():
+        # Relative entries are invalid per the XDG Base Directory spec.
+        if os.path.isabs(d) and path.parent.resolve() != own and path.is_file():
             return path
     return None
 
