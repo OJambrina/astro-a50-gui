@@ -22,6 +22,7 @@ Public surface used by the main window:
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QIcon
@@ -29,6 +30,7 @@ from PyQt6.QtWidgets import (
     QApplication,
     QButtonGroup,
     QComboBox,
+    QFileDialog,
     QGraphicsOpacityEffect,
     QGridLayout,
     QGroupBox,
@@ -39,6 +41,7 @@ from PyQt6.QtWidgets import (
     QRadioButton,
 )
 
+import astroeq
 from eq_meter import _EqMeter
 from i18n import t
 from templates import _EQ_TEMPLATES, _load_user_templates, _save_user_templates
@@ -397,12 +400,13 @@ class EqTemplatesWidget(QGroupBox):
         with self._device_lock:
             self.reload_under_lock(None)
 
-    def _prompt_new_template_name(self) -> str | None:
-        existing = set(self._all_templates())
-        i = 1
-        while f"{t('default_template_name')} {i}" in existing:
-            i += 1
-        suggestion = f"{t('default_template_name')} {i}"
+    def _prompt_new_template_name(self, suggestion: str | None = None) -> str | None:
+        if suggestion is None:
+            existing = set(self._all_templates())
+            i = 1
+            while f"{t('default_template_name')} {i}" in existing:
+                i += 1
+            suggestion = f"{t('default_template_name')} {i}"
         while True:
             name, ok = QInputDialog.getText(
                 self,
@@ -427,6 +431,85 @@ class EqTemplatesWidget(QGroupBox):
                 if resp != QMessageBox.StandardButton.Yes:
                     continue
             return name
+
+    # ------------------------------------------ Command Center files
+
+    def import_presets(self) -> list[str]:
+        """Tools menu: pick .astroeq files exported by Astro Command Center."""
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, t("act_import_presets"), str(Path.home()), t("filter_astroeq"))
+        return self.import_files(paths)
+
+    def import_files(self, paths) -> list[str]:
+        """Add each .astroeq file as a user template named after the file.
+
+        Command Center shows imported presets by file name, so we do the same.
+        A preset identical to an existing one (builtin or user) is reused
+        silently; the same name with different values opens the usual name
+        dialog. Returns the imported names.
+        """
+        imported = []
+        added = False
+        for path in map(Path, paths):
+            try:
+                template = astroeq.parse(path.read_text(encoding="utf-8-sig"))
+            except (OSError, ValueError) as e:
+                QMessageBox.warning(self, t("err_title"),
+                                    t("err_import", name=path.name, error=e))
+                continue
+            name = path.stem.strip()
+            if self._all_templates().get(name) == template:
+                imported.append(name)  # already there, identical: nothing to ask
+                continue
+            if not name or name in self._all_templates():
+                name = self._prompt_new_template_name(suggestion=name or None)
+                if name is None:
+                    continue
+            self._user_templates[name] = template
+            imported.append(name)
+            added = True
+        if added:
+            try:
+                _save_user_templates(self._user_templates)
+            except OSError as e:
+                QMessageBox.warning(self, t("err_title"), t("err_save", error=e))
+            self._refresh_combos()
+        return imported
+
+    def load_into_selected_slot(self, name: str) -> None:
+        """Put a template in the selected EQ slot, as if picked in its combo:
+        it shows on the meter and stays pending until synced."""
+        combo = self.template_combos[self._selected_slot]
+        idx = combo.findData(name)
+        if idx >= 0:
+            combo.setCurrentIndex(idx)
+
+    def export_preset(self) -> str | None:
+        """Tools menu: save a template as a .astroeq file for Command Center."""
+        names = sorted(self._all_templates(), key=str.casefold)
+        current = self.template_combos[self._selected_slot].currentData()
+        name, ok = QInputDialog.getItem(
+            self, t("act_export_preset"), t("dlg_export_label"), names,
+            names.index(current) if current in names else 0, False)
+        if not ok:
+            return None
+        default = Path.home() / (name.replace("/", "-") + astroeq.SUFFIX)
+        path, _ = QFileDialog.getSaveFileName(
+            self, t("act_export_preset"), str(default), t("filter_astroeq"))
+        if not path:
+            return None
+        if not path.endswith(astroeq.SUFFIX):
+            path += astroeq.SUFFIX
+        try:
+            self.export_file(name, path)
+        except OSError as e:
+            QMessageBox.warning(self, t("err_title"), t("err_export", error=e))
+            return None
+        return name
+
+    def export_file(self, name: str, path) -> None:
+        text = astroeq.dump(name, self._all_templates()[name])
+        Path(path).write_text(text, encoding="utf-8", newline="")
 
     def _refresh_combos(self, select: dict[int, str] | None = None) -> None:
         select = select or {}
