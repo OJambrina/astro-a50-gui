@@ -1078,6 +1078,47 @@ class MenuSlotsTest(unittest.TestCase):
         window._save_setting = lambda key, value: gui.A50Window._save_setting(window, key, value)
         return window
 
+    def test_menu_entry_actions_are_hidden_when_run_from_the_package(self):
+        # Issue #19: the package ships its own menu entry.
+        # Remove stays while an entry made from a checkout would shadow it.
+        window = self._window()
+        window._build_language_menu = window._build_theme_menu = lambda _p: mock.MagicMock()
+        with tempfile.TemporaryDirectory() as tmp:
+            user_entry = Path(tmp) / "a.desktop"
+            ours = "[Desktop Entry]\nExec=/venv/bin/python /src/gui.py\n"
+            kmenuedit = "[Desktop Entry]\nName=Mine\nExec=astro-a50-gui\n"
+            for packaged, content, install, remove in (
+                (False, None, True, True),
+                (True, None, False, False),
+                (True, ours, False, True),
+                (True, kmenuedit, False, False),  # the user's own edit of the package entry
+            ):
+                if content is None:
+                    user_entry.unlink(missing_ok=True)
+                else:
+                    user_entry.write_text(content)
+                with (mock.patch.object(gui, "PACKAGED", packaged),
+                      mock.patch.object(gui, "DESKTOP_FILE", user_entry),
+                      mock.patch.object(gui, "LEGACY_DESKTOP_FILE", Path(tmp) / "old.desktop"),
+                      mock.patch.object(gui, "QAction") as action):
+                    gui.A50Window._build_menu_bar(window)
+                texts = [c.args[0] for c in action.call_args_list]
+                self.assertEqual(gui.t("act_install_menu") in texts, install)
+                self.assertEqual(gui.t("act_remove_menu") in texts, remove)
+                self.assertIn(gui.t("act_about"), texts)
+
+    def test_packaged_remove_hides_itself_once_done(self):
+        window = self._window()
+        for packaged, error, hidden in ((True, None, True), (True, OSError("ro"), False),
+                                        (False, None, False)):
+            window._act_remove.reset_mock()
+            with (mock.patch.object(gui, "PACKAGED", packaged),
+                  mock.patch.object(gui, "remove_entry", side_effect=error, return_value="ok"),
+                  mock.patch.object(gui.QMessageBox, "warning")):
+                gui.A50Window._remove_menu_entry(window)
+            self.assertEqual(window._act_remove.setVisible.call_args_list,
+                             [mock.call(False)] if hidden else [])
+
     def test_unwritable_config_warns_instead_of_crashing(self):
         window = self._window()
         with (
@@ -1372,10 +1413,52 @@ class SweepRegressionTest(unittest.TestCase):
         import menu_install
         with tempfile.TemporaryDirectory() as tmp:
             apps = Path(tmp)
-            (apps / "a.desktop").write_text("x")
+            (apps / "a.desktop").write_text("[Desktop Entry]\nExec=python /src/gui.py\n")
             with (mock.patch.object(Path, "unlink", side_effect=PermissionError("ro")),
                   self.assertRaises(OSError)):
                 menu_install.remove_entry(apps, apps / "a.desktop", apps / "old.desktop")
+
+    def test_menu_messages_mention_a_packaged_entry_of_the_same_name(self):
+        # Issue #19: the package's own entry stays in the menu after Remove.
+        import menu_install
+        from i18n import t
+        with tempfile.TemporaryDirectory() as user, tempfile.TemporaryDirectory() as system:
+            apps = Path(user) / "applications"
+            args = (apps, apps / "a.desktop", apps / "old.desktop")
+            # The user's own data dir may be listed too: its entry is not the package's.
+            dirs = f"{user}:/nonexistent:{system}"
+            with mock.patch.dict(os.environ, {"XDG_DATA_DIRS": dirs}):
+                self.assertEqual(menu_install.install_entry(*args, "p", Path("/src/gui.py")),
+                                 t("msg_menu_installed"))
+                self.assertEqual(menu_install.remove_entry(*args), t("msg_menu_removed"))
+                (Path(system) / "applications").mkdir()
+                (Path(system) / "applications" / "a.desktop").write_text("x")
+                self.assertEqual(menu_install.install_entry(*args, "p", Path("/src/gui.py")),
+                                 t("msg_menu_installed_system"))
+                self.assertEqual(menu_install.remove_entry(*args), t("msg_menu_removed_system"))
+                self.assertEqual(menu_install.remove_entry(*args), t("msg_menu_absent_system"))
+
+    def test_remove_keeps_the_menu_editors_copy_of_the_package_entry(self):
+        # The menu editor saves an edited package entry under the same file name.
+        import menu_install
+        with tempfile.TemporaryDirectory() as tmp:
+            apps = Path(tmp)
+            edited = apps / "a.desktop"
+            edited.write_text("[Desktop Entry]\nName=Mine\nExec=astro-a50-gui\n")
+            (apps / "old.desktop").write_text("[Desktop Entry]\nExec=python /src/gui.py\n")
+            menu_install.remove_entry(apps, edited, apps / "old.desktop")
+            self.assertTrue(edited.exists())
+            self.assertFalse((apps / "old.desktop").exists())
+
+    def test_own_entry_ignores_spaces_around_the_equals_sign(self):
+        # The Desktop Entry spec ignores them; another tool may write them.
+        import menu_install
+        with tempfile.TemporaryDirectory() as tmp:
+            entry = Path(tmp) / "a.desktop"
+            entry.write_text("[Desktop Entry]\nExec = python /src/gui.py\n")
+            self.assertTrue(menu_install.own_entry(entry))
+            entry.write_text("[Desktop Entry]\nExecAfter=gui.py\nExec=astro-a50-gui\n")
+            self.assertFalse(menu_install.own_entry(entry))
 
     # --- process_lock.py ----------------------------------------------
 

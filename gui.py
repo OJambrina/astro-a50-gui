@@ -41,7 +41,7 @@ from base_info_dialog import format_base_info
 from device_handle import DeviceHandle
 from eq_widget import EqTemplatesWidget
 from i18n import LANGUAGE_NAMES, gate_label, needs_restart, t
-from menu_install import install_entry, remove_entry
+from menu_install import install_entry, own_entry, remove_entry
 from process_lock import (
     PID_FILE,
     PROCESS_NAME,
@@ -61,6 +61,10 @@ from status_worker import StatusWorker
 from vendor.eh_fifty import NoiseGateMode, SliderType
 
 SCRIPT_PATH = Path(__file__).resolve()
+# Installed by the package (in /usr/share/astro-a50-gui), which ships its own
+# menu entry: Install/Remove in menu would only shadow or fail to remove it
+# (issue #19).
+PACKAGED = SCRIPT_PATH.parent == Path("/usr/share", PROCESS_NAME)
 APPS_DIR = (
     Path(os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share"))
     / "applications"
@@ -268,15 +272,18 @@ class A50Window(QMainWindow):
         bar = self.menuBar()
         tools = bar.addMenu(t("menu_tools"))
 
-        act_install = QAction(t("act_install_menu"), self)
-        act_install.triggered.connect(self._install_menu_entry)
-        tools.addAction(act_install)
+        if not PACKAGED:
+            act_install = QAction(t("act_install_menu"), self)
+            act_install.triggered.connect(self._install_menu_entry)
+            tools.addAction(act_install)
 
-        act_remove = QAction(t("act_remove_menu"), self)
-        act_remove.triggered.connect(self._remove_menu_entry)
-        tools.addAction(act_remove)
-
-        tools.addSeparator()
+        # Packaged, Remove stays while an entry made from a checkout exists: it
+        # shadows the package's own entry and nothing else would remove it.
+        if not PACKAGED or own_entry(DESKTOP_FILE) or LEGACY_DESKTOP_FILE.exists():
+            self._act_remove = QAction(t("act_remove_menu"), self)
+            self._act_remove.triggered.connect(self._remove_menu_entry)
+            tools.addAction(self._act_remove)
+            tools.addSeparator()
         act_info = QAction(t("act_base_info"), self)
         act_info.triggered.connect(self._show_base_info)
         tools.addAction(act_info)
@@ -404,7 +411,7 @@ class A50Window(QMainWindow):
                 APPS_DIR, DESKTOP_FILE, LEGACY_DESKTOP_FILE,
                 PROCESS_NAME, SCRIPT_PATH,
             )
-            self.statusBar().showMessage(msg, 3000)
+            self.statusBar().showMessage(msg, 6000)
         except Exception as e:
             QMessageBox.warning(self, t("err_title"), t("err_menu_install", error=e))
 
@@ -414,7 +421,9 @@ class A50Window(QMainWindow):
         except OSError as e:
             QMessageBox.warning(self, t("err_title"), t("err_menu_remove", error=e))
             return
-        self.statusBar().showMessage(msg, 3000)
+        if PACKAGED:
+            self._act_remove.setVisible(False)  # nothing of ours is left to remove
+        self.statusBar().showMessage(msg, 6000)
 
     def _build_action_buttons(self):
         row = QHBoxLayout()

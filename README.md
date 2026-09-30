@@ -84,7 +84,9 @@ sudo udevadm trigger --action=change --attr-match=idVendor=9886 --attr-match=idP
 ```
 
 Or install a KDE menu entry from inside the GUI: **Outils → Installer dans le
-menu KDE**.
+menu KDE**. The package ships its own entry, so run from the package the GUI
+only offers **Retirer du menu KDE**, and only while an entry installed earlier
+from a checkout still hides the package's.
 
 ## Architecture
 

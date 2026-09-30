@@ -1,4 +1,5 @@
 """KDE menu entry install / remove (writes a .desktop file)."""
+import os
 import re
 import subprocess
 import sys
@@ -36,6 +37,8 @@ def install_entry(
     if legacy_desktop_file.exists():
         legacy_desktop_file.unlink()
     _refresh_desktop_db(apps_dir)
+    if _system_entry(apps_dir, desktop_file.name):
+        return t("msg_menu_installed_system")
     return t("msg_menu_installed")
 
 
@@ -48,13 +51,46 @@ def remove_entry(
     message indicating whether anything was removed."""
     removed = False
     for path in (desktop_file, legacy_desktop_file):
-        if path.exists():
+        # The menu editor saves an edited package entry under desktop_file's
+        # name: only an entry this app wrote is removed.
+        if path.exists() and (path == legacy_desktop_file or own_entry(path)):
             path.unlink()  # OSError reaches the caller: the entry is still there
             removed = True
     if removed:
         _refresh_desktop_db(apps_dir)
-        return t("msg_menu_removed")
-    return t("msg_menu_absent")
+    # A package's entry of the same name stays in the menu (issue #19).
+    if _system_entry(apps_dir, desktop_file.name):
+        return t("msg_menu_removed_system" if removed else "msg_menu_absent_system")
+    return t("msg_menu_removed" if removed else "msg_menu_absent")
+
+
+def own_entry(path: Path) -> bool:
+    """Whether `path` is an entry written by install_entry, which runs gui.py,
+    rather than the menu editor's copy of the package's entry (same file name,
+    Exec=astro-a50-gui)."""
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        return False
+    for line in text.splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key.strip() == "Exec" and "gui.py" in value:
+            return True
+    return False
+
+
+def _system_entry(apps_dir: Path, name: str) -> Path | None:
+    """The system-wide .desktop file of this name (e.g. from the package), which
+    the user entry shadows while it exists. `apps_dir`, the user's own, is
+    skipped: some sessions list it in XDG_DATA_DIRS too."""
+    dirs = os.environ.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share"
+    own = apps_dir.resolve()
+    for d in dirs.split(":"):
+        path = Path(d) / "applications" / name
+        # Relative entries are invalid per the XDG Base Directory spec.
+        if os.path.isabs(d) and path.parent.resolve() != own and path.is_file():
+            return path
+    return None
 
 
 def _exec_arg(arg: str) -> str:
