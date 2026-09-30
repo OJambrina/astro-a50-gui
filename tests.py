@@ -218,6 +218,7 @@ class EqWidgetHasPendingTest(unittest.TestCase):
         device_active: int | None = 1,
     ):
         widget = EqTemplatesWidget.__new__(EqTemplatesWidget)
+        widget._slot_device = {1: None, 2: None, 3: None}
         widget._slot_pending = slot_pending or {1: set(), 2: set(), 3: set()}
         widget._selected_slot = selected_slot
         widget._device_active_eq = device_active
@@ -249,6 +250,7 @@ class EqWidgetHasPendingTest(unittest.TestCase):
 class EqWidgetMatchTemplateTest(unittest.TestCase):
     def _make(self, user_templates: dict | None = None):
         widget = EqTemplatesWidget.__new__(EqTemplatesWidget)
+        widget._slot_device = {1: None, 2: None, 3: None}
         widget._user_templates = user_templates or {}
         return widget
 
@@ -318,6 +320,22 @@ class _MockCombo:
             return self._items[idx][1]
         return None
 
+    def itemText(self, idx):
+        if 0 <= idx < len(self._items):
+            return self._items[idx][0]
+        return None
+
+    def insertItem(self, idx, _icon, text, data):
+        self._items.insert(idx, (text, data))
+        if self._items and idx <= self._current and len(self._items) > 1:
+            self._current += 1
+
+    def removeItem(self, idx):
+        if 0 <= idx < len(self._items):
+            del self._items[idx]
+            if idx < self._current or self._current >= len(self._items):
+                self._current = max(self._current - 1, 0)
+
     def setCurrentIndex(self, idx):
         if 0 <= idx < len(self._items):
             self._current = idx
@@ -338,6 +356,15 @@ class _MockRadio:
 
     def setChecked(self, value):
         self.checked = value
+
+
+# A preset set up in Astro Command Center, as the base reports it: no builtin
+# or user template matches it (issue #11).
+_ARCTURUS_ON_BASE = {
+    "name": "ARCTURUS",
+    "gain": [5, 6, 4, 6, 5],
+    "bands": {1: (100, 0), 2: (1775, 9011), 3: (4664, 8192), 4: (8210, 9011), 5: (11125, 0)},
+}
 
 
 class EqWidgetPushPendingTest(unittest.TestCase):
@@ -363,6 +390,7 @@ class EqWidgetPushPendingTest(unittest.TestCase):
         device_active: int | None = 1,
     ):
         widget = EqTemplatesWidget.__new__(EqTemplatesWidget)
+        widget._slot_device = {1: None, 2: None, 3: None}
         widget._user_templates = user_templates or {}
         widget._device_templates = device_templates or {1: None, 2: None, 3: None}
         widget._slot_bands = slot_bands or {1: [], 2: [], 3: []}
@@ -512,6 +540,25 @@ class EqWidgetPushPendingTest(unittest.TestCase):
             widget.push_pending_to_device()
         widget.device.set_eq_preset_name.assert_not_called()
 
+    def test_unknown_device_preset_keeps_its_name_and_bandwidths(self):
+        # Issue #11: syncing an edited "<name> (on the base)" slot keeps the
+        # device's own name and bandwidths and leaves the library alone.
+        widget = self._make(
+            user_templates={"MINE": dict(templates._EQ_TEMPLATES["PRO"])},
+            combos={1: EqTemplatesWidget.ON_DEVICE},
+            slot_bands={1: [(100, 5), (1775, 7), (4664, 4), (8210, 6), (11125, 5)], 2: [], 3: []},
+            slot_pending={1: {2}, 2: set(), 3: set()},
+        )
+        widget._slot_device[1] = dict(_ARCTURUS_ON_BASE)
+        with mock.patch("eq_widget._save_user_templates") as save:
+            widget.push_pending_to_device()
+        widget.device.set_eq_preset_name.assert_called_once_with(1, "ARCTURUS")
+        widget.device.set_eq_preset_gain.assert_called_once_with(1, [5, 7, 4, 6, 5])
+        widget.device.set_eq_preset_freq_and_bw.assert_any_call(1, 2, 1775, 9011)
+        widget.device.set_eq_preset_freq_and_bw.assert_any_call(1, 3, 4664, 8192)
+        save.assert_not_called()
+        self.assertEqual(widget._slot_device[1]["gain"], [5, 7, 4, 6, 5])
+
 
 class EqWidgetReloadUnderLockTest(unittest.TestCase):
     """Regression tests for ``reload_under_lock``.
@@ -535,6 +582,7 @@ class EqWidgetReloadUnderLockTest(unittest.TestCase):
     def _make_widget(self, device_data: dict[int, dict | None],
                      *, user_templates: dict | None = None):
         widget = EqTemplatesWidget.__new__(EqTemplatesWidget)
+        widget._slot_device = {1: None, 2: None, 3: None}
         widget._user_templates = user_templates or {}
         widget._device_templates = {1: None, 2: None, 3: None}
         widget._slot_bands = {1: [], 2: [], 3: []}
@@ -647,6 +695,42 @@ class EqWidgetReloadUnderLockTest(unittest.TestCase):
         self.assertEqual(widget._selected_slot, 2)
         self.assertFalse(widget.has_pending())
 
+    def test_unknown_device_preset_shows_its_own_name(self):
+        # Issue #11: the slot shows "<name> (on the base)", not the first
+        # template, and its bands aren't flagged against an unrelated one.
+        media = templates._EQ_TEMPLATES["MEDIA"]
+        device_data = {
+            1: dict(_ARCTURUS_ON_BASE),
+            2: {"name": "MEDIA", "gain": list(media["gain"]), "bands": dict(media["bands"])},
+            3: dict(_ARCTURUS_ON_BASE, name=""),
+        }
+        widget = self._make_widget(device_data)
+        widget.reload_under_lock(active_eq_preset=1)
+        combo = widget.template_combos[1]
+        self.assertEqual(combo.currentData(), EqTemplatesWidget.ON_DEVICE)
+        self.assertEqual(combo.itemText(0), "ARCTURUS (on the base)")
+        self.assertEqual(widget._slot_modified[1], set())
+        self.assertEqual(widget._slot_pending[1], set())
+        # A matched slot gets no extra entry; a nameless one is labelled by slot.
+        self.assertEqual(widget.template_combos[2].findData(EqTemplatesWidget.ON_DEVICE), -1)
+        self.assertEqual(widget.template_combos[3].itemText(0), "Preset 3 (on the base)")
+
+    def test_device_entry_restores_the_base_values(self):
+        widget = self._make_widget({s: dict(_ARCTURUS_ON_BASE) for s in (1, 2, 3)})
+        widget.reload_under_lock(active_eq_preset=1)
+        combo = widget.template_combos[1]
+        original = list(widget._slot_bands[1])
+        combo.setCurrentIndex(combo.findData("MEDIA"))
+        self.assertEqual(widget._slot_pending[1], {1, 2, 3, 4, 5})
+        combo.setCurrentIndex(combo.findData(EqTemplatesWidget.ON_DEVICE))
+        self.assertEqual(widget._slot_bands[1], original)
+        self.assertEqual(widget._slot_pending[1], set())
+        # Editing a band flags it against the base's own values; undoing it clears that.
+        widget._on_band_modified(2, 7)
+        self.assertIn(2, widget._slot_modified[1])
+        widget._on_band_modified(2, 6)
+        self.assertNotIn(2, widget._slot_modified[1])
+
 
 class EqWidgetHandlersTest(unittest.TestCase):
     """Unit tests for ``_on_band_modified`` and ``_on_template_combo_changed``
@@ -659,6 +743,7 @@ class EqWidgetHandlersTest(unittest.TestCase):
               user_templates: dict | None = None):
         media = templates._EQ_TEMPLATES["MEDIA"]
         widget = EqTemplatesWidget.__new__(EqTemplatesWidget)
+        widget._slot_device = {1: None, 2: None, 3: None}
         widget._user_templates = user_templates or {}
         widget._device_templates = {1: device_template, 2: None, 3: None}
         widget._slot_bands = {
@@ -746,6 +831,7 @@ class EqWidgetPersistAndPushTest(unittest.TestCase):
         import threading as _threading
         media = templates._EQ_TEMPLATES["MEDIA"]
         widget = EqTemplatesWidget.__new__(EqTemplatesWidget)
+        widget._slot_device = {1: None, 2: None, 3: None}
         widget._user_templates = dict(user_templates or {})
         widget._device_templates = {1: combo_data, 2: None, 3: None}
         widget._slot_bands = {
