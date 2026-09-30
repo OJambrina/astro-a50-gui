@@ -27,7 +27,9 @@ if [[ -z "${BUS:-}" || -z "${DEV:-}" ]]; then
   exit 1
 fi
 
-USBMON="/sys/kernel/debug/usb/usbmon/${BUS}t"
+# The "u" interface: the legacy "t" one drops the bus from the address
+# ("Io:002:05"), so FILTER below would never match it.
+USBMON="/sys/kernel/debug/usb/usbmon/${BUS}u"
 if [[ ! -r "$USBMON" ]]; then
   echo "Cannot read $USBMON (usbmon enabled? debugfs mounted?)" >&2
   exit 1
