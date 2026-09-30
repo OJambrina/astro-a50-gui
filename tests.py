@@ -1860,6 +1860,19 @@ class SweepRegressionTest(unittest.TestCase):
         gui.A50Window._on_eq_dirty_changed(window, False)
         window.btn_save.setStyleSheet.assert_called_with(gui.A50Window._SYNC_STYLE_DIRTY)
 
+    def test_sync_button_keeps_its_height_in_both_states(self):
+        # A 1px border in one style only made the whole window shift by 2px
+        # each time Sync changed state.
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # CI has no display
+        from PyQt6.QtWidgets import QApplication, QPushButton
+        type(self)._qt_app = QApplication.instance() or QApplication([])
+        heights = []
+        for style in (gui.A50Window._SYNC_STYLE_DIRTY, gui.A50Window._SYNC_STYLE_SYNCED):
+            button = QPushButton("Sync")
+            button.setStyleSheet(style)
+            heights.append(button.sizeHint().height())
+        self.assertEqual(heights[0], heights[1])
+
     def test_gate_change_announces_nothing_before_sync(self):
         window = mock.MagicMock()
         window._loading = False

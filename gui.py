@@ -107,7 +107,10 @@ class A50Window(QMainWindow):
 
     _SYNC_STYLE_DIRTY = (
         "QPushButton { background-color: #FF9800; color: white; "
-        "font-weight: bold; padding: 6px 14px; border-radius: 4px; border: none; } "
+        # Same 1px border as the synced style, transparent: the button keeps
+        # its height, so the window doesn't shift when Sync changes state.
+        "font-weight: bold; padding: 6px 14px; border-radius: 4px; "
+        "border: 1px solid transparent; } "
         "QPushButton:hover { background-color: #F57C00; } "
         "QPushButton:pressed { background-color: #E65100; }"
     )
