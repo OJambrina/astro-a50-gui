@@ -308,7 +308,7 @@ class _MockCombo:
         self.set_current_index_log = []  # (idx, was_blocked)
 
     def currentData(self):
-        if not self._items:
+        if not self._items or self._current < 0:
             return None
         return self._items[self._current][1]
 
@@ -332,6 +332,15 @@ class _MockCombo:
         self._items.insert(idx, (text, data))
         if self._items and idx <= self._current and len(self._items) > 1:
             self._current += 1
+
+    def clear(self):
+        self._items = []
+        self._current = -1
+
+    def addItem(self, _icon, text, data):
+        self._items.append((text, data))
+        # Qt selects the first item added to an empty combo.
+        self._current = max(self._current, 0)
 
     def removeItem(self, idx):
         if 0 <= idx < len(self._items):
@@ -1359,6 +1368,58 @@ class EqWidgetImportExportTest(unittest.TestCase):
             self.assertEqual(widget.export_preset(), "MEDIA")
         dialog.setDefaultSuffix.assert_called_once_with("astroeq")
         self.assertTrue(path.exists())  # no second suffix on an upper-case one
+
+    def _reloaded(self, device_data, user_templates=None):
+        widget = EqWidgetReloadUnderLockTest._make_widget(
+            self, device_data, user_templates=user_templates)
+        widget.reload_under_lock(active_eq_preset=1)
+        return widget
+
+    def test_import_of_the_base_preset_keeps_it_selected(self):
+        # The "(on the base)" entry goes once its name is a template: the slot
+        # must pick that template, not fall back to the first one and rename
+        # the device's slot on Sync.
+        arc = dict(_ARCTURUS_ON_BASE)
+        widget = self._reloaded({1: dict(arc), 2: dict(arc), 3: dict(arc)})
+        widget._on_band_modified(2, 0)  # unsynced edit: no re-read after import
+        path = self.dir / "ARCTURUS.astroeq"
+        path.write_text(astroeq.dump("ARCTURUS", {"gain": arc["gain"], "bands": arc["bands"]}))
+        widget.import_files([path])
+        self.assertEqual(widget.template_combos[1].currentData(), "ARCTURUS")
+        widget.push_pending_to_device()
+        widget.device.set_eq_preset_name.assert_called_with(1, "ARCTURUS")
+
+    def test_import_overwriting_a_preset_updates_the_slots_showing_it(self):
+        mine = {"gain": [0] * 5, "bands": dict(templates._EQ_TEMPLATES["MEDIA"]["bands"])}
+        arc = dict(_ARCTURUS_ON_BASE)
+        widget = self._reloaded({1: dict(arc), 2: dict(mine, name="MINE"), 3: dict(arc)},
+                                user_templates={"MINE": dict(mine)})
+        path = self.dir / "MINE.astroeq"
+        path.write_text(astroeq.dump("MINE", dict(mine, gain=[3] * 5)))
+        with mock.patch.object(EqTemplatesWidget, "_prompt_new_template_name",
+                               return_value="MINE"):
+            widget.import_files([path])
+        self.assertEqual([g for _f, g in widget._slot_bands[2]], [3] * 5)
+        self.assertEqual(widget._slot_pending[2], {1, 2, 3, 4, 5})
+
+    def test_import_of_a_too_long_file_name_asks_for_another(self):
+        widget = self._make()
+        path = self.dir / ("é" * 30 + ".astroeq")  # 60 bytes, over the 58 a slot holds
+        path.write_text(astroeq.dump("x", templates._EQ_TEMPLATES["MEDIA"]))
+        with mock.patch.object(EqTemplatesWidget, "_prompt_new_template_name",
+                               return_value="Short") as prompt:
+            self.assertEqual(widget.import_files([path]), ["Short"])
+        prompt.assert_called_once()
+
+    def test_import_reports_a_failed_library_save_as_the_other_saves_do(self):
+        from i18n import t
+        widget = self._make()
+        path = self.dir / "NEW.astroeq"
+        path.write_text(astroeq.dump("NEW", templates._EQ_TEMPLATES["MEDIA"]))
+        with (mock.patch("eq_widget._save_user_templates", side_effect=OSError("ro")),
+              mock.patch("eq_widget.QMessageBox") as box):
+            widget.import_files([path])
+        self.assertIn(t("err_template_save", error="ro"), str(box.warning.call_args))
 
     def test_export_writes_a_file_command_center_layout(self):
         widget = self._make()
