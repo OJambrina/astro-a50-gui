@@ -1450,6 +1450,16 @@ class SweepRegressionTest(unittest.TestCase):
             self.assertTrue(edited.exists())
             self.assertFalse((apps / "old.desktop").exists())
 
+    def test_own_entry_ignores_spaces_around_the_equals_sign(self):
+        # The Desktop Entry spec ignores them; another tool may write them.
+        import menu_install
+        with tempfile.TemporaryDirectory() as tmp:
+            entry = Path(tmp) / "a.desktop"
+            entry.write_text("[Desktop Entry]\nExec = python /src/gui.py\n")
+            self.assertTrue(menu_install.own_entry(entry))
+            entry.write_text("[Desktop Entry]\nExecAfter=gui.py\nExec=astro-a50-gui\n")
+            self.assertFalse(menu_install.own_entry(entry))
+
     # --- process_lock.py ----------------------------------------------
 
     @staticmethod

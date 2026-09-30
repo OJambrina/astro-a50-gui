@@ -72,7 +72,11 @@ def own_entry(path: Path) -> bool:
         text = path.read_text(errors="replace")
     except OSError:
         return False
-    return any(line.startswith("Exec=") and "gui.py" in line for line in text.splitlines())
+    for line in text.splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key.strip() == "Exec" and "gui.py" in value:
+            return True
+    return False
 
 
 def _system_entry(apps_dir: Path, name: str) -> Path | None:
