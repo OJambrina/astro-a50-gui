@@ -555,7 +555,13 @@ class EqTemplatesWidget(QGroupBox):
         it shows on the meter and stays pending until synced."""
         combo = self.template_combos[self._selected_slot]
         idx = combo.findData(name)
-        if idx >= 0:
+        if idx < 0:
+            return
+        if idx == combo.currentIndex():
+            # Qt emits nothing for the current index: reapply it, or the slot's
+            # edited bands would stay while the import reports it loaded.
+            self._on_template_combo_changed(self._selected_slot)
+        else:
             combo.setCurrentIndex(idx)
 
     def export_preset(self) -> str | None:
@@ -568,12 +574,14 @@ class EqTemplatesWidget(QGroupBox):
         if not ok:
             return None
         default = Path.home() / (name.replace("/", "-") + astroeq.SUFFIX)
-        path, _ = QFileDialog.getSaveFileName(
-            self, t("act_export_preset"), str(default), t("filter_astroeq"))
-        if not path:
+        dialog = QFileDialog(self, t("act_export_preset"), str(default), t("filter_astroeq"))
+        dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptSave)
+        # The dialog adds the suffix itself, so its overwrite check sees the
+        # name that is actually written.
+        dialog.setDefaultSuffix(astroeq.SUFFIX.lstrip("."))
+        if not dialog.exec():
             return None
-        if not path.endswith(astroeq.SUFFIX):
-            path += astroeq.SUFFIX
+        path = dialog.selectedFiles()[0]
         try:
             self.export_file(name, path)
         except OSError as e:

@@ -1333,6 +1333,33 @@ class EqWidgetImportExportTest(unittest.TestCase):
         widget.load_into_selected_slot("NOPE")
         widget.template_combos[2].setCurrentIndex.assert_called_once()
 
+    def test_load_into_selected_slot_reapplies_the_preset_already_shown(self):
+        # setCurrentIndex on the current index emits nothing: the slot's edited
+        # bands would stay while the import says it was loaded.
+        widget = self._make()
+        widget._selected_slot = 2
+        widget.template_combos = {s: mock.MagicMock() for s in (1, 2, 3)}
+        widget.template_combos[2].findData.return_value = 4
+        widget.template_combos[2].currentIndex.return_value = 4
+        widget._on_template_combo_changed = mock.MagicMock()
+        widget.load_into_selected_slot("ARCTURUS")
+        widget._on_template_combo_changed.assert_called_once_with(2)
+
+    def test_export_lets_the_dialog_add_the_suffix(self):
+        # The dialog's overwrite check must see the final name, suffix included.
+        widget = self._make()
+        widget._selected_slot = 1
+        widget.template_combos = {1: mock.MagicMock()}
+        path = self.dir / "ARCTURUS.ASTROEQ"
+        with (mock.patch("eq_widget.QInputDialog.getItem", return_value=("MEDIA", True)),
+              mock.patch("eq_widget.QFileDialog") as dialog_cls):
+            dialog = dialog_cls.return_value
+            dialog.exec.return_value = True
+            dialog.selectedFiles.return_value = [str(path)]
+            self.assertEqual(widget.export_preset(), "MEDIA")
+        dialog.setDefaultSuffix.assert_called_once_with("astroeq")
+        self.assertTrue(path.exists())  # no second suffix on an upper-case one
+
     def test_export_writes_a_file_command_center_layout(self):
         widget = self._make()
         path = self.dir / "MEDIA.astroeq"
