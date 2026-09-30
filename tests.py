@@ -1410,6 +1410,68 @@ class EqSlotReferenceReviewTest(unittest.TestCase):
         self.assertEqual(cleared, [])
 
 
+class EqSlotReferenceSecondReviewTest(unittest.TestCase):
+    """Follow-ups from the second review of #21."""
+
+    def test_bandwidths_set_elsewhere_are_marked_until_a_sync_is_queued(self):
+        # The base holds MEDIA's name, gains and frequencies with its own
+        # bandwidths (set in Command Center): the bands differ from MEDIA.
+        media = templates._EQ_TEMPLATES["MEDIA"]
+        bands = dict(media["bands"])
+        bands[3] = (bands[3][0], bands[3][1] + 1000)
+        base = {"name": "MEDIA", "gain": list(media["gain"]), "bands": bands}
+        widget = _reload_widget({1: base, 2: dict(_ARCTURUS_ON_BASE), 3: dict(_ARCTURUS_ON_BASE)})
+        widget.reload_under_lock(1)
+        self.assertEqual(widget.template_combos[1].currentData(), "MEDIA")
+        self.assertEqual(widget._slot_modified[1], {3})
+        widget._on_reset_templates()  # queues MEDIA, bandwidths included
+        self.assertEqual(widget._slot_pending[1], {1, 2, 3, 4, 5})
+        self.assertEqual(widget._slot_modified[1], set())
+
+    def test_sync_redefining_a_user_preset_queues_the_other_slots_showing_it(self):
+        mine = {"gain": [1] * 5, "bands": dict(templates._EQ_TEMPLATES["MEDIA"]["bands"])}
+        widget = _reload_widget({1: dict(mine, name="Mine"), 2: dict(mine, name="Mine"),
+                                 3: dict(_ARCTURUS_ON_BASE)}, user_templates={"Mine": dict(mine)})
+        widget.reload_under_lock(1)
+        with mock.patch("eq_widget._save_user_templates"):
+            widget._on_band_modified(2, 5)
+            widget.push_pending_to_device()
+        self.assertEqual(widget._user_templates["Mine"]["gain"], [1, 5, 1, 1, 1])
+        self.assertEqual(widget._slot_pending[2], {1, 2, 3, 4, 5})
+        self.assertEqual([g for _f, g in widget._slot_bands[2]], [1, 5, 1, 1, 1])
+
+    def test_import_overwrite_leaves_a_slot_already_holding_the_new_values(self):
+        # Edited in Command Center, which wrote it to slot 2, then imported here.
+        old = {"gain": [1] * 5, "bands": dict(templates._EQ_TEMPLATES["MEDIA"]["bands"])}
+        new = dict(old, gain=[2] * 5)
+        widget = _reload_widget({1: dict(_ARCTURUS_ON_BASE), 2: dict(new, name="Mine"),
+                                 3: dict(_ARCTURUS_ON_BASE)}, user_templates={"Mine": dict(old)})
+        widget.reload_under_lock(1)
+        path = Path(tempfile.mkdtemp()) / "Mine.astroeq"
+        self.addCleanup(shutil.rmtree, path.parent)
+        path.write_text(astroeq.dump("Mine", new))
+        with (mock.patch.object(EqTemplatesWidget, "_prompt_new_template_name",
+                                return_value="Mine"),
+              mock.patch("eq_widget._save_user_templates")):
+            widget.import_files([path])
+        self.assertEqual(widget.template_combos[2].currentData(), "Mine")
+        self.assertEqual(widget._slot_pending[2], set())
+
+    def test_failed_sync_refreshes_the_meter_and_buttons(self):
+        widget = _reload_widget({s: dict(_ARCTURUS_ON_BASE) for s in (1, 2, 3)})
+        widget.reload_under_lock(1)
+        widget._refresh_meter = mock.MagicMock()
+        widget._update_apply_enabled = mock.MagicMock()
+        widget._on_band_modified(2, 0)
+        widget._refresh_meter.reset_mock()
+        widget._update_apply_enabled.reset_mock()
+        widget.device.set_eq_preset_gain.side_effect = OSError("unplugged")
+        with self.assertRaises(OSError):
+            widget.push_pending_to_device()
+        widget._refresh_meter.assert_called()
+        widget._update_apply_enabled.assert_called()
+
+
 class EqWidgetImportExportTest(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()

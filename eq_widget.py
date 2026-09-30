@@ -57,6 +57,14 @@ def _values(preset: dict) -> list[tuple[int, int]]:
     return [(preset["bands"][b][0], preset["gain"][b - 1]) for b in range(1, 6)]
 
 
+def _device_bands(bands: list[tuple[int, int]], ref: dict | None) -> dict:
+    """The visible bands with the reference's bandwidths (the meter edits gains
+    and frequencies only), as written to the device."""
+    ref = ref or _EQ_TEMPLATES["MEDIA"]
+    return {b: (bands[b - 1][0], 0 if b in (1, 5) else ref["bands"][b][1])
+            for b in range(1, 6)}
+
+
 class EqTemplatesWidget(QGroupBox):
     """Self-contained 5-band EQ + 3-slot preset editor."""
 
@@ -199,7 +207,7 @@ class EqTemplatesWidget(QGroupBox):
         overwritten.
 
         Caller must hold ``self._device_lock``."""
-        user_templates_changed = False
+        redefined: dict[str, int] = {}  # user preset -> the slot that redefined it
         try:
             for slot in self.template_combos:
                 if not self._slot_pending[slot]:
@@ -207,9 +215,9 @@ class EqTemplatesWidget(QGroupBox):
                 bands = self._slot_bands[slot]
                 if not bands:
                     continue
-                name = self._reference_name(slot)
+                name, ref = self._resolve(slot)
                 gain = [g for (_freq, g) in bands]
-                device_bands = self._device_bands(slot)
+                device_bands = _device_bands(bands, ref)
                 self.device.set_eq_preset_name(slot, name)
                 self.device.set_eq_preset_gain(slot, gain)
                 for b, (freq, bw) in device_bands.items():
@@ -221,23 +229,27 @@ class EqTemplatesWidget(QGroupBox):
                         "gain": list(gain),
                         "bands": dict(device_bands),
                     }
-                    user_templates_changed = True
+                    redefined[name] = slot
                 self._slot_device[slot] = {"name": name, "gain": gain, "bands": device_bands}
                 self._slot_pending[slot].clear()
+            if (self._device_active_eq is not None
+                    and self._selected_slot != self._device_active_eq):
+                self.device.set_active_eq_preset(self._selected_slot)
+                self._device_active_eq = self._selected_slot
         finally:
             # Presets the device already took are saved even when a later
-            # slot fails, so memory and disk never disagree, and the slots
-            # already written are matched against what they now hold.
-            if user_templates_changed:
+            # slot fails, so memory and disk never disagree; the slots already
+            # written are matched against what they now hold, other slots
+            # showing a redefined preset take its new values, as Save does,
+            # and the meter and buttons follow.
+            if redefined:
                 _save_user_templates(self._user_templates)
             self._rematch()
-        if (self._device_active_eq is not None
-                and self._selected_slot != self._device_active_eq):
-            self.device.set_active_eq_preset(self._selected_slot)
-            self._device_active_eq = self._selected_slot
-        self._refresh_meter()
-        self._update_apply_enabled()
-        self._emit_dirty_if_changed()
+            for name, slot in redefined.items():
+                self._show_new_values(name, skip=slot)
+            self._refresh_meter()
+            self._update_apply_enabled()
+            self._emit_dirty_if_changed()
 
     # ------------------------------------------------------ handlers
 
@@ -250,8 +262,8 @@ class EqTemplatesWidget(QGroupBox):
             return
         freq, _old = bands[band - 1]
         bands[band - 1] = (freq, gain)
-        self._update_modified(slot)
         self._slot_pending[slot].add(band)
+        self._update_modified(slot)
         self._refresh_meter()
         self._update_apply_enabled()
         self._emit_dirty_if_changed()
@@ -314,11 +326,9 @@ class EqTemplatesWidget(QGroupBox):
         # a Sync would otherwise rename the device's slot.
         for s in affected_slots:
             self._slot_pending[s].clear()
-        self._rematch()
-        for s in affected_slots:
             device = self._slot_device.get(s)
             self._slot_bands[s] = _values(device) if device else []
-            self._update_modified(s)
+        self._rematch()
         self._refresh_meter()
         self._update_apply_enabled()
         self._emit_dirty_if_changed()
@@ -356,7 +366,7 @@ class EqTemplatesWidget(QGroupBox):
         QApplication.processEvents()
         try:
             gain = [g for (_freq, g) in bands]
-            new_bands = self._device_bands(slot)
+            new_bands = _device_bands(bands, self._reference(slot))
             # Device first: a write it refuses leaves library, disk and combos
             # untouched instead of holding a preset that can never be pushed.
             with self._device_lock:
@@ -529,13 +539,14 @@ class EqTemplatesWidget(QGroupBox):
         for s, combo in self.template_combos.items():
             if s == skip or combo.currentData() != name or not self._slot_bands[s]:
                 continue
+            if self._device_templates.get(s) == name:
+                continue  # the base already holds the new definition
             if not self._slot_pending[s]:
                 self._slot_bands[s] = _values(tpl)
                 self._slot_pending[s] = {1, 2, 3, 4, 5}
             self._update_modified(s)
 
-    def _refresh_combos(self, select: dict[int, str] | None = None) -> None:
-        select = select or {}
+    def _refresh_combos(self, select: dict[int, str]) -> None:
         all_names = sorted(self._all_templates(), key=str.casefold)
         for slot, combo in self.template_combos.items():
             was_blocked = combo.blockSignals(True)
@@ -625,10 +636,6 @@ class EqTemplatesWidget(QGroupBox):
         """What the slot is compared with, reset to and synced as."""
         return self._resolve(slot)[1]
 
-    def _reference_name(self, slot: int) -> str:
-        """The name a Sync writes to the slot."""
-        return self._resolve(slot)[0]
-
     def _device_target(self, slot: int) -> str | None:
         """What a slot shows for what the base holds: the template it matches,
         else its name's template, else "<name> (on the base)"; None if unread."""
@@ -638,14 +645,6 @@ class EqTemplatesWidget(QGroupBox):
         if self._device_templates.get(slot):
             return self._device_templates[slot]
         return data["name"] if data["name"] in self._all_templates() else self.ON_DEVICE
-
-    def _device_bands(self, slot: int) -> dict:
-        """The slot's visible bands with the reference's bandwidths (the meter
-        edits gains and frequencies only), as written to the device."""
-        ref = self._reference(slot) or _EQ_TEMPLATES["MEDIA"]
-        bands = self._slot_bands[slot]
-        return {b: (bands[b - 1][0], 0 if b in (1, 5) else ref["bands"][b][1])
-                for b in range(1, 6)}
 
     def _rematch(self) -> None:
         """Match what each slot holds on the base against the library again,
@@ -669,13 +668,21 @@ class EqTemplatesWidget(QGroupBox):
             self._update_modified(slot)
 
     def _update_modified(self, slot: int) -> None:
-        """Mark the bands whose gain or frequency differ from the reference
-        (the meter cannot change bandwidths)."""
+        """Mark the bands that differ from the slot's reference."""
         bands = self._slot_bands[slot]
         ref = self._reference(slot)
-        self._slot_modified[slot] = set() if not bands else {
+        if not bands or ref is None:
+            self._slot_modified[slot] = set(range(1, 6)) if bands else set()
+            return
+        ref_values = _values(ref)
+        # With nothing queued the slot is what the base holds, so its own
+        # bandwidths count too (set in Command Center, say). Once a Sync is
+        # queued, it writes the reference's bandwidths.
+        device = None if self._slot_pending[slot] else self._slot_device.get(slot)
+        self._slot_modified[slot] = {
             b for b in range(1, 6)
-            if ref is None or bands[b - 1] != _values(ref)[b - 1]
+            if bands[b - 1] != ref_values[b - 1]
+            or (device is not None and device["bands"][b][1] != ref["bands"][b][1])
         }
 
     def _refresh_meter(self) -> None:
