@@ -84,7 +84,8 @@ sudo udevadm trigger --action=change --attr-match=idVendor=9886 --attr-match=idP
 ```
 
 Or install a KDE menu entry from inside the GUI: **Outils → Installer dans le
-menu KDE**.
+menu KDE**. The package ships its own entry, so these menu items only show when
+the GUI runs from a checkout.
 
 ## Architecture
 

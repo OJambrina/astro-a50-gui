@@ -1078,6 +1078,19 @@ class MenuSlotsTest(unittest.TestCase):
         window._save_setting = lambda key, value: gui.A50Window._save_setting(window, key, value)
         return window
 
+    def test_menu_entry_actions_are_hidden_when_run_from_the_package(self):
+        # Issue #19: the package ships its own menu entry.
+        window = self._window()
+        window._build_language_menu = window._build_theme_menu = lambda _p: mock.MagicMock()
+        for packaged, expected in ((False, True), (True, False)):
+            with (mock.patch.object(gui, "PACKAGED", packaged),
+                  mock.patch.object(gui, "QAction") as action):
+                gui.A50Window._build_menu_bar(window)
+            texts = [c.args[0] for c in action.call_args_list]
+            self.assertEqual(gui.t("act_install_menu") in texts, expected)
+            self.assertEqual(gui.t("act_remove_menu") in texts, expected)
+            self.assertIn(gui.t("act_about"), texts)
+
     def test_unwritable_config_warns_instead_of_crashing(self):
         window = self._window()
         with (
@@ -1376,6 +1389,24 @@ class SweepRegressionTest(unittest.TestCase):
             with (mock.patch.object(Path, "unlink", side_effect=PermissionError("ro")),
                   self.assertRaises(OSError)):
                 menu_install.remove_entry(apps, apps / "a.desktop", apps / "old.desktop")
+
+    def test_menu_messages_mention_a_packaged_entry_of_the_same_name(self):
+        # Issue #19: the package's own entry stays in the menu after Remove.
+        import menu_install
+        from i18n import t
+        with tempfile.TemporaryDirectory() as user, tempfile.TemporaryDirectory() as system:
+            apps = Path(user)
+            args = (apps, apps / "a.desktop", apps / "old.desktop")
+            with mock.patch.dict(os.environ, {"XDG_DATA_DIRS": f"/nonexistent:{system}"}):
+                self.assertEqual(menu_install.install_entry(*args, "p", Path("/x.py")),
+                                 t("msg_menu_installed"))
+                self.assertEqual(menu_install.remove_entry(*args), t("msg_menu_removed"))
+                (Path(system) / "applications").mkdir()
+                (Path(system) / "applications" / "a.desktop").write_text("x")
+                self.assertEqual(menu_install.install_entry(*args, "p", Path("/x.py")),
+                                 t("msg_menu_installed_system"))
+                self.assertEqual(menu_install.remove_entry(*args), t("msg_menu_removed_system"))
+                self.assertEqual(menu_install.remove_entry(*args), t("msg_menu_absent_system"))
 
     # --- process_lock.py ----------------------------------------------
 
