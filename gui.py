@@ -276,10 +276,12 @@ class A50Window(QMainWindow):
             act_install.triggered.connect(self._install_menu_entry)
             tools.addAction(act_install)
 
+        # Packaged, Remove stays while an entry made from a checkout exists: it
+        # shadows the package's own entry and nothing else would remove it.
+        if not PACKAGED or DESKTOP_FILE.exists() or LEGACY_DESKTOP_FILE.exists():
             act_remove = QAction(t("act_remove_menu"), self)
             act_remove.triggered.connect(self._remove_menu_entry)
             tools.addAction(act_remove)
-
             tools.addSeparator()
         act_info = QAction(t("act_base_info"), self)
         act_info.triggered.connect(self._show_base_info)

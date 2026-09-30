@@ -1080,16 +1080,27 @@ class MenuSlotsTest(unittest.TestCase):
 
     def test_menu_entry_actions_are_hidden_when_run_from_the_package(self):
         # Issue #19: the package ships its own menu entry.
+        # Remove stays while an entry made from a checkout would shadow it.
         window = self._window()
         window._build_language_menu = window._build_theme_menu = lambda _p: mock.MagicMock()
-        for packaged, expected in ((False, True), (True, False)):
-            with (mock.patch.object(gui, "PACKAGED", packaged),
-                  mock.patch.object(gui, "QAction") as action):
-                gui.A50Window._build_menu_bar(window)
-            texts = [c.args[0] for c in action.call_args_list]
-            self.assertEqual(gui.t("act_install_menu") in texts, expected)
-            self.assertEqual(gui.t("act_remove_menu") in texts, expected)
-            self.assertIn(gui.t("act_about"), texts)
+        with tempfile.TemporaryDirectory() as tmp:
+            user_entry = Path(tmp) / "a.desktop"
+            for packaged, has_user_entry, install, remove in (
+                (False, False, True, True),
+                (True, False, False, False),
+                (True, True, False, True),
+            ):
+                if has_user_entry:
+                    user_entry.write_text("x")
+                with (mock.patch.object(gui, "PACKAGED", packaged),
+                      mock.patch.object(gui, "DESKTOP_FILE", user_entry),
+                      mock.patch.object(gui, "LEGACY_DESKTOP_FILE", Path(tmp) / "old.desktop"),
+                      mock.patch.object(gui, "QAction") as action):
+                    gui.A50Window._build_menu_bar(window)
+                texts = [c.args[0] for c in action.call_args_list]
+                self.assertEqual(gui.t("act_install_menu") in texts, install)
+                self.assertEqual(gui.t("act_remove_menu") in texts, remove)
+                self.assertIn(gui.t("act_about"), texts)
 
     def test_unwritable_config_warns_instead_of_crashing(self):
         window = self._window()
