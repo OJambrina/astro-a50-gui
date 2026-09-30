@@ -1,4 +1,5 @@
 """KDE menu entry install / remove (writes a .desktop file)."""
+import re
 import subprocess
 import sys
 import textwrap
@@ -24,7 +25,7 @@ def install_entry(
         Name={t('desktop_name')}
         GenericName=Headset configuration
         Comment={t('desktop_comment')}
-        Exec={sys.executable} {script_path}
+        Exec={_exec_arg(sys.executable)} {_exec_arg(str(script_path))}
         Icon=audio-headset
         Terminal=false
         Categories=AudioVideo;Audio;Settings;
@@ -48,13 +49,25 @@ def remove_entry(
     removed = False
     for path in (desktop_file, legacy_desktop_file):
         if path.exists():
-            with suppress(OSError):
-                path.unlink()
-                removed = True
+            path.unlink()  # OSError reaches the caller: the entry is still there
+            removed = True
     if removed:
         _refresh_desktop_db(apps_dir)
         return t("msg_menu_removed")
     return t("msg_menu_absent")
+
+
+def _exec_arg(arg: str) -> str:
+    """Quote one Exec argument per the Desktop Entry spec.
+
+    Reserved characters need double quotes, inside which ", `, $ and \\ are
+    backslash-escaped; % is doubled (field codes). The string-value escape
+    then doubles every backslash, since it is applied before quoting.
+    """
+    arg = arg.replace("%", "%%")
+    if re.search(r"[\s\"'\\><~|&;$*?#()`]", arg):
+        arg = '"' + re.sub(r'(["`$\\])', r"\\\1", arg) + '"'
+    return arg.replace("\\", "\\\\")
 
 
 def _refresh_desktop_db(apps_dir: Path) -> None:

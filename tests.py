@@ -849,6 +849,9 @@ class EqWidgetPersistAndPushTest(unittest.TestCase):
         widget._device_lock = _threading.RLock()
         widget._refresh_combos = lambda **kw: None
         widget.reload_under_lock = lambda *_a, **_k: None
+        widget._refresh_meter = lambda: None
+        widget._update_apply_enabled = lambda: None
+        widget._emit_dirty_if_changed = lambda: None
         widget.device = mock.MagicMock()
         widget.template_combos = {
             1: _MockCombo(current_data=combo_data),
@@ -1155,6 +1158,385 @@ class MenuSlotsTest(unittest.TestCase):
             self.assertEqual(settings.get("theme"), themes.AUTO)
         window._theme_actions[themes.AUTO].setChecked.assert_called_with(True)
         window.statusBar.return_value.showMessage.assert_called_once()
+
+
+class SweepRegressionTest(unittest.TestCase):
+    """Regressions for the bugs found by the sweep of main at 5800fc1."""
+
+    # --- templates.py -------------------------------------------------
+
+    def test_load_tolerates_any_file_shape(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "user-templates.json"
+            with mock.patch.object(templates, "USER_TEMPLATES_FILE", path):
+                for content in (b"[]", b"null", b"\xe9t\xe9",
+                                json.dumps({"A": {"gain": [0] * 5, "bands": []}}).encode(),
+                                json.dumps({"A": {"gain": [0, 0], "bands": {}}}).encode()):
+                    path.write_bytes(content)
+                    self.assertEqual(templates._load_user_templates(), {}, content)
+
+    def test_interrupted_save_keeps_the_previous_library(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "user-templates.json"
+            old = {"Mix": {"gain": [1, 2, 3, 4, 5],
+                           "bands": {b: (100 * b, 0) for b in range(1, 6)}}}
+            with mock.patch.object(templates, "USER_TEMPLATES_FILE", path):
+                templates._save_user_templates(old)
+                with (mock.patch.object(templates.os, "fsync", side_effect=OSError("disk full")),
+                      self.assertRaises(OSError)):
+                    templates._save_user_templates({})
+                self.assertEqual(templates._load_user_templates(), old)
+
+    # --- eq_widget.py -------------------------------------------------
+
+    def test_delete_with_unwritable_library_warns_and_keeps_preset(self):
+        widget = EqWidgetPersistAndPushTest._make(
+            self, user_templates={"Mine": {"gain": [0] * 5, "bands": {}}}, combo_data="Mine")
+        with (mock.patch("eq_widget.QMessageBox") as box,
+              mock.patch("eq_widget._save_user_templates", side_effect=PermissionError("ro"))):
+            box.StandardButton.Yes = "yes"
+            box.question.return_value = "yes"
+            widget._on_delete_template_for_slot(1)
+        box.warning.assert_called_once()
+        self.assertIn("Mine", widget._user_templates)
+
+    def test_reload_keeps_a_device_preset_the_library_does_not_know(self):
+        bands = {1: (80, 0), 2: (500, 1234), 3: (900, 4321), 4: (3000, 777), 5: (9000, 0)}
+        foreign = {"name": "FROM ACC", "gain": [1, 2, 3, 4, 5], "bands": bands}
+        media = templates._EQ_TEMPLATES["MEDIA"]
+        device = {1: foreign, 2: dict(media, name="MEDIA"), 3: dict(media, name="MEDIA")}
+        widget = EqWidgetReloadUnderLockTest._make_widget(self, device)
+        widget.reload_under_lock(1)
+        self.assertEqual(widget.template_combos[1].currentData(), EqTemplatesWidget.ON_DEVICE)
+        self.assertEqual(widget._slot_modified[1], set())
+        # An edit then Sync keeps the device's name and bandwidths.
+        widget._slot_pending[1] = {3}
+        widget.push_pending_to_device()
+        widget.device.set_eq_preset_name.assert_called_with(1, "FROM ACC")
+        widget.device.set_eq_preset_freq_and_bw.assert_any_call(1, 2, 500, 1234)
+
+    def test_band_back_to_template_repaints_the_meter(self):
+        widget = EqWidgetHandlersTest._make(self)
+        painted = []
+        widget._refresh_meter = lambda: painted.append(set(widget._slot_modified[1]))
+        media = templates._EQ_TEMPLATES["MEDIA"]
+        widget._on_band_modified(3, 5)
+        widget._on_band_modified(3, media["gain"][2])
+        self.assertEqual(painted[-1], set())
+
+    def test_too_long_name_is_refused_before_anything_is_saved(self):
+        widget = EqWidgetPersistAndPushTest._make(self)
+        with (mock.patch("eq_widget.QInputDialog.getText",
+                         side_effect=[("é" * 30, True), (None, False)]),
+              mock.patch("eq_widget.QMessageBox") as box):
+            self.assertIsNone(widget._prompt_new_template_name())
+        box.warning.assert_called_once()
+
+    def test_refused_device_write_leaves_library_and_disk_untouched(self):
+        widget = EqWidgetPersistAndPushTest._make(self)
+        widget.device.set_eq_preset_name.side_effect = AssertionError()
+        with (mock.patch("eq_widget.QApplication"), mock.patch("eq_widget.QMessageBox") as box,
+              mock.patch("eq_widget._save_user_templates") as save):
+            widget._persist_and_push(1, "NewMix", is_new=True, btn=mock.MagicMock(),
+                                     busy_key="btn_apply_busy", idle_key="btn_apply")
+        self.assertNotIn("NewMix", widget._user_templates)
+        save.assert_not_called()
+        self.assertIn("AssertionError", str(box.warning.call_args))
+
+    def test_create_keeps_other_slots_edits_and_the_active_slot(self):
+        widget = EqWidgetPersistAndPushTest._make(self)
+        widget.reload_under_lock = mock.MagicMock()
+        widget._slot_pending[2] = {1}
+        with mock.patch("eq_widget.QApplication"), mock.patch("eq_widget._save_user_templates"):
+            widget._persist_and_push(1, "NewMix", is_new=True, btn=mock.MagicMock(),
+                                     busy_key="btn_apply_busy", idle_key="btn_apply")
+        widget.reload_under_lock.assert_not_called()
+        self.assertEqual(widget._slot_pending[2], {1})
+        self.assertEqual(widget._device_active_eq, 1)
+
+    def test_failed_sync_keeps_the_user_preset(self):
+        media = templates._EQ_TEMPLATES["MEDIA"]
+        mine = {"gain": list(media["gain"]), "bands": dict(media["bands"])}
+        widget = EqWidgetPushPendingTest._make(
+            self, user_templates={"Mine": dict(mine)}, combos={1: "Mine"},
+            slot_bands={1: [(f, g + 1) for f, g in
+                            EqWidgetPushPendingTest._bands_from_template("MEDIA")], 2: [], 3: []},
+            slot_modified={1: {1}, 2: set(), 3: set()}, slot_pending={1: {1}, 2: set(), 3: set()})
+        widget.device.set_eq_preset_gain.side_effect = OSError("unplugged")
+        with mock.patch("eq_widget._save_user_templates"), self.assertRaises(OSError):
+            widget.push_pending_to_device()
+        self.assertEqual(widget._user_templates["Mine"]["gain"], mine["gain"])
+        self.assertEqual(widget._slot_modified[1], {1})
+
+    def test_unread_active_slot_is_never_written(self):
+        widget = EqWidgetPushPendingTest._make(self, device_active=None, selected_slot=1)
+        widget.push_pending_to_device()
+        widget.device.set_active_eq_preset.assert_not_called()
+
+    # --- gui.py -------------------------------------------------------
+
+    def _window(self, **reads):
+        window = mock.MagicMock()
+        window._loading = False
+        window.slider_widgets = {}
+        for name, value in reads.items():
+            getattr(window.device, name).side_effect = (
+                value if isinstance(value, Exception) else None)
+            getattr(window.device, name).return_value = value
+        return window
+
+    def test_failed_reads_disable_controls_and_sync_skips_them(self):
+        err = OSError("timeout")
+        window = self._window(get_balance=err, get_noise_gate_mode=err,
+                              get_alert_volume=err, get_active_eq_preset=err)
+        window.cmb_gate.findData.return_value = -1
+        gui.A50Window.reload_all(window)
+        window.sld_balance.setEnabled.assert_called_with(False)
+        window.cmb_gate.setEnabled.assert_called_with(False)
+        window.sld_alert.setEnabled.assert_called_with(False)
+        for w in (window.sld_balance, window.cmb_gate, window.sld_alert):
+            w.isEnabled.return_value = False
+        with mock.patch.object(gui, "QApplication"):
+            gui.A50Window._on_save(window)
+        window.device.set_default_balance.assert_not_called()
+        window.device.set_noise_gate_mode.assert_not_called()
+        window.device.set_alert_volume.assert_not_called()
+
+    def test_sync_writes_the_default_balance_only_when_the_slider_moved(self):
+        window = self._window(get_balance=120)
+        window.cmb_gate.findData.return_value = 0
+        gui.A50Window.reload_all(window)
+        window.sld_balance.isEnabled.return_value = True
+        window.sld_balance.value.return_value = 120
+        with mock.patch.object(gui, "QApplication"):
+            gui.A50Window._on_save(window)
+        window.device.set_default_balance.assert_not_called()
+        window.sld_balance.value.return_value = 200
+        with mock.patch.object(gui, "QApplication"):
+            gui.A50Window._on_save(window)
+        window.device.set_default_balance.assert_called_once_with(200)
+
+    def test_gate_change_announces_nothing_before_sync(self):
+        window = mock.MagicMock()
+        window._loading = False
+        gui.A50Window._on_gate_changed(window, 0)
+        window.statusBar.return_value.showMessage.assert_not_called()
+        window._mark_dirty.assert_called_once()
+
+    def test_apps_dir_follows_xdg_data_home(self):
+        import importlib
+        with mock.patch.dict(os.environ, {"XDG_DATA_HOME": "/xdg/data"}):
+            try:
+                self.assertEqual(importlib.reload(gui).APPS_DIR, Path("/xdg/data/applications"))
+            finally:
+                importlib.reload(gui)
+
+    def test_base_info_shows_the_base_when_the_headset_is_off(self):
+        window = mock.MagicMock()
+        window._device_lock = mock.MagicMock()
+        window.device.get_device_info.return_value = DeviceInfo(vendor_id=0x9886, product_id=0x2C)
+        window.device.get_base_firmware_version.return_value = FirmwareVersion(major=40372, minor=43)
+        window.device.get_headset_firmware_version.side_effect = AssertionError()
+        with (mock.patch.object(gui, "_raw_request", side_effect=OSError("SLAVE")),
+              mock.patch.object(gui, "QMessageBox") as box):
+            gui.A50Window._show_base_info(window)
+        box.warning.assert_not_called()
+        text = box.information.call_args[0][2]
+        self.assertIn("40372.43", text)
+        self.assertIn("AssertionError", text)
+
+    # --- raw_request.py -----------------------------------------------
+
+    def test_raw_request_raises_on_an_error_answer(self):
+        from raw_request import RawRequestError, _raw_request
+        device = mock.MagicMock()
+        device._dev.read.return_value = (bytes([0x02, 0x01, 29, 5, 0, 0, 1])
+                                         + b"HID_ERROR_SLAVE_NO_SLAVE\x00")
+        with self.assertRaisesRegex(RawRequestError, "SLAVE_NO_SLAVE"):
+            _raw_request(device, 0x83, b"\x01")
+
+    # --- menu_install.py ----------------------------------------------
+
+    def test_exec_line_quotes_paths(self):
+        import menu_install
+        with tempfile.TemporaryDirectory() as tmp:
+            apps = Path(tmp)
+            with mock.patch.object(menu_install.sys, "executable", "/opt/my env/python"):
+                menu_install.install_entry(apps, apps / "a.desktop", apps / "old.desktop",
+                                           "astro-a50-gui", Path("/home/u/100% a/gui.py"))
+            exec_line = next(line for line in (apps / "a.desktop").read_text().splitlines()
+                             if line.startswith("Exec="))
+        self.assertEqual(exec_line, 'Exec="/opt/my env/python" "/home/u/100%% a/gui.py"')
+
+    def test_remove_entry_reports_a_failed_unlink(self):
+        import menu_install
+        with tempfile.TemporaryDirectory() as tmp:
+            apps = Path(tmp)
+            (apps / "a.desktop").write_text("x")
+            with (mock.patch.object(Path, "unlink", side_effect=PermissionError("ro")),
+                  self.assertRaises(OSError)):
+                menu_install.remove_entry(apps, apps / "a.desktop", apps / "old.desktop")
+
+    # --- process_lock.py ----------------------------------------------
+
+    @staticmethod
+    def _proc(root: Path, pid: int, *, comm: bytes, start: int, cmdline=b"", cwd="/"):
+        d = root / str(pid)
+        d.mkdir()
+        (d / "comm").write_bytes(comm + b"\n")
+        (d / "cmdline").write_bytes(cmdline)
+        (d / "stat").write_bytes(f"{pid} (x) S".encode() + b" 0" * 18 + f" {start} 0".encode())
+        (d / "exe").symlink_to("/usr/bin/python3")
+        (d / "cwd").symlink_to(cwd)
+        return d
+
+    def test_instance_scan_survives_odd_processes_and_kills_only_older_ones(self):
+        import process_lock
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            me = os.getpid()
+            name = process_lock.PROCESS_NAME.encode()
+            self._proc(root, me, comm=name, start=500)
+            self._proc(root, 10, comm=name, start=100)            # older: stop it
+            self._proc(root, 99999, comm=name, start=900)         # newer: leave it
+            self._proc(root, 11, comm=b"\xff\xfe", start=50)      # non-UTF-8 comm
+            found = process_lock._find_other_instances(Path("/x/gui.py"), proc=root)
+        self.assertEqual(found, [10])
+
+    def test_relative_script_resolves_against_the_process_cwd(self):
+        import process_lock
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            other = root / "other"
+            other.mkdir()
+            (other / "gui.py").write_text("")
+            ours = (root / "ours.py").resolve()
+            d = self._proc(root, 12, comm=b"python3", start=1,
+                           cmdline=b"python3\x00gui.py\x00", cwd=str(other))
+            with mock.patch.object(process_lock.Path, "cwd", return_value=root):
+                self.assertFalse(process_lock._is_our_instance(d, ours.with_name("gui.py")))
+            self.assertTrue(process_lock._is_our_instance(d, (other / "gui.py").resolve()))
+
+    def test_wait_for_a_foreign_process_does_not_raise(self):
+        import process_lock
+        with mock.patch.object(process_lock.os, "kill", side_effect=PermissionError()):
+            self.assertTrue(process_lock._wait_for_exit(1, timeout_s=0.1))
+
+    # --- status_worker.py ---------------------------------------------
+
+    def test_worker_reopens_the_base_after_the_handle_died(self):
+        import threading
+
+        import usb.core
+
+        import status_worker
+        device = mock.MagicMock()
+        device.get_headset_status.side_effect = [usb.core.USBError("gone"), "status"]
+        device.get_battery_status.side_effect = [usb.core.USBError("gone"), "battery"]
+        device.reopen.return_value = True
+        worker = status_worker.StatusWorker.__new__(status_worker.StatusWorker)
+        worker._device, worker._lock = device, threading.RLock()
+        worker.statusReady = mock.MagicMock()
+        worker.reconnected = mock.MagicMock()
+        worker.refresh()
+        device.reopen.assert_called_once_with()
+        worker.statusReady.emit.assert_called_once_with("status", "battery")
+        worker.reconnected.emit.assert_called_once()
+
+    def test_worker_does_not_reopen_on_an_error_answer(self):
+        import threading
+
+        import status_worker
+        device = mock.MagicMock()
+        device.get_headset_status.side_effect = AssertionError()
+        worker = status_worker.StatusWorker.__new__(status_worker.StatusWorker)
+        worker._device, worker._lock = device, threading.RLock()
+        worker.statusReady = mock.MagicMock()
+        worker.reconnected = mock.MagicMock()
+        worker.refresh()
+        device.reopen.assert_not_called()
+
+    def test_device_handle_swaps_in_a_new_device(self):
+        from device_handle import DeviceHandle
+        from vendor.eh_fifty import DeviceNotConnected
+        first, second = mock.MagicMock(), mock.MagicMock()
+        factory = mock.MagicMock(side_effect=[first, DeviceNotConnected(), second])
+        handle = DeviceHandle(factory)
+        handle.get_battery_status()
+        first.get_battery_status.assert_called_once()
+        self.assertFalse(handle.reopen())          # base still unplugged
+        first.close.assert_called_once()
+        with self.assertRaises(DeviceNotConnected):
+            handle.get_battery_status()
+        self.assertTrue(handle.reopen())           # plugged back
+        handle.get_battery_status()
+        second.get_battery_status.assert_called_once()
+
+    def test_absent_base_fails_on_the_call_not_the_lookup(self):
+        from device_handle import DeviceHandle
+        from vendor.eh_fifty import DeviceNotConnected
+        handle = DeviceHandle(mock.MagicMock(side_effect=[mock.MagicMock(), DeviceNotConnected()]))
+        self.assertFalse(handle.reopen())
+        method = handle.get_headset_status          # must not raise
+        with self.assertRaises(DeviceNotConnected):
+            method()
+        self.assertIsNone(gui.safe(handle.get_headset_status))
+        window = mock.MagicMock()
+        window.device, window._device_lock = handle, mock.MagicMock()
+        gui.A50Window.refresh_status(window)         # Refresh with the base unplugged
+        window._update_status_display.assert_called_once_with(None, None)
+
+    def test_reconnect_reloads_only_what_failed_to_load(self):
+        window = mock.MagicMock()
+        window.slider_widgets = {}
+        for c in (window.sld_balance, window.cmb_gate, window.sld_alert):
+            c.isEnabled.return_value = True
+        gui.A50Window._on_reconnected(window)
+        window.reload_all.assert_not_called()
+        window.sld_alert.isEnabled.return_value = False
+        gui.A50Window._on_reconnected(window)
+        window.reload_all.assert_called_once()
+
+    def test_failed_library_write_after_create_keeps_device_state(self):
+        widget = EqWidgetPersistAndPushTest._make(self)
+        btn = mock.MagicMock()
+        with (mock.patch("eq_widget.QApplication"), mock.patch("eq_widget.QMessageBox") as box,
+              mock.patch("eq_widget._save_user_templates", side_effect=OSError("ro"))):
+            widget._persist_and_push(1, "NewMix", is_new=True, btn=btn,
+                                     busy_key="btn_apply_busy", idle_key="btn_apply")
+        self.assertEqual(widget._device_templates[1], "NewMix")
+        btn.setText.assert_called_with(gui.t("btn_apply"))
+        box.warning.assert_called_once()
+        self.assertEqual(widget._slot_pending[1], set())
+
+    def test_save_of_a_preset_shown_in_another_slot_pends_that_slot(self):
+        media = templates._EQ_TEMPLATES["MEDIA"]
+        mine = {"gain": list(media["gain"]), "bands": dict(media["bands"])}
+        widget = EqWidgetPersistAndPushTest._make(
+            self, user_templates={"Mine": mine}, combo_data="Mine")
+        widget.template_combos[2] = _MockCombo(current_data="Mine")
+        widget._slot_bands[2] = [(f, g) for f, g in
+                                 EqWidgetPushPendingTest._bands_from_template("MEDIA")]
+        widget._device_templates[2] = "Mine"
+        with mock.patch("eq_widget.QApplication"), mock.patch("eq_widget._save_user_templates"):
+            widget._persist_and_push(1, "Mine", is_new=False, btn=mock.MagicMock(),
+                                     busy_key="btn_save_eq_busy", idle_key="btn_save_eq")
+        self.assertEqual(widget._slot_pending[2], {1, 2, 3, 4, 5})
+        self.assertEqual(widget._slot_bands[2][2][1], 4)
+        self.assertEqual(widget._slot_modified[2], set())
+
+    def test_presets_the_device_took_are_saved_when_a_later_slot_fails(self):
+        media = templates._EQ_TEMPLATES["MEDIA"]
+        mine = {"gain": list(media["gain"]), "bands": dict(media["bands"])}
+        edited = [(f, g + 1) for f, g in EqWidgetPushPendingTest._bands_from_template("MEDIA")]
+        widget = EqWidgetPushPendingTest._make(
+            self, user_templates={"Mine": dict(mine)}, combos={1: "Mine", 2: "PRO"},
+            slot_bands={1: list(edited), 2: list(edited), 3: []},
+            slot_pending={1: {1}, 2: {1}, 3: set()})
+        widget.device.set_eq_preset_name.side_effect = [None, OSError("unplugged")]
+        with mock.patch("eq_widget._save_user_templates") as save, self.assertRaises(OSError):
+            widget.push_pending_to_device()
+        save.assert_called_once()
 
 
 if __name__ == "__main__":
