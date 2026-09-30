@@ -8,6 +8,7 @@ import os
 import shutil
 import string
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -349,11 +350,14 @@ class _MockCombo:
                 self._current = max(self._current - 1, 0)
 
     def setCurrentIndex(self, idx):
-        if 0 <= idx < len(self._items):
+        if 0 <= idx < len(self._items) or idx == -1:
             self._current = idx
         self.set_current_index_log.append((idx, self._signals_blocked))
         if not self._signals_blocked and self._signal_handler is not None:
             self._signal_handler()
+
+    def count(self):
+        return len(self._items)
 
     def blockSignals(self, block):
         prev = self._signals_blocked
@@ -572,6 +576,60 @@ class EqWidgetPushPendingTest(unittest.TestCase):
         self.assertEqual(widget._slot_device[1]["gain"], [5, 7, 4, 6, 5])
 
 
+def _reload_widget(device_data: dict[int, dict | None], *, user_templates: dict | None = None):
+    """An EQ widget without Qt whose device answers with `device_data`
+    (None: that slot's read fails), for reload_under_lock and what follows."""
+    widget = EqTemplatesWidget.__new__(EqTemplatesWidget)
+    widget._slot_device = {1: None, 2: None, 3: None}
+    widget._user_templates = user_templates or {}
+    widget._device_templates = {1: None, 2: None, 3: None}
+    widget._slot_bands = {1: [], 2: [], 3: []}
+    widget._slot_modified = {1: set(), 2: set(), 3: set()}
+    widget._slot_pending = {1: set(), 2: set(), 3: set()}
+    widget._selected_slot = 1
+    widget._device_active_eq = None
+    widget._last_dirty = False
+    widget._loading = False
+    widget._refresh_meter = lambda: None
+    widget._update_apply_enabled = lambda: None
+    widget._emit_dirty_if_changed = lambda: None
+    widget.device = mock.MagicMock()
+
+    def get_name(slot):
+        return device_data[slot]["name"]
+
+    def get_gain(slot):
+        obj = mock.MagicMock()
+        obj.gain = device_data[slot]["gain"]
+        return obj
+
+    def get_fb(slot, band):
+        obj = mock.MagicMock()
+        freq, bw = device_data[slot]["bands"][band]
+        obj.center_freq = freq
+        obj.bandwidth = bw
+        return obj
+
+    widget.device.get_eq_preset_name.side_effect = get_name
+    widget.device.get_eq_preset_gain.side_effect = get_gain
+    widget.device.get_eq_preset_freq_and_bw.side_effect = get_fb
+
+    all_names = sorted(
+        list(templates._EQ_TEMPLATES) + list(widget._user_templates),
+        key=str.casefold,
+    )
+    items = [(n, n) for n in all_names]
+    widget.template_combos = {}
+    for slot in (1, 2, 3):
+        combo = _MockCombo(items=items)
+        combo._signal_handler = (
+            lambda s=slot, w=widget: w._on_template_combo_changed(s)
+        )
+        widget.template_combos[slot] = combo
+    widget.template_radios = {slot: _MockRadio() for slot in (1, 2, 3)}
+    return widget
+
+
 class EqWidgetReloadUnderLockTest(unittest.TestCase):
     """Regression tests for ``reload_under_lock``.
 
@@ -591,57 +649,8 @@ class EqWidgetReloadUnderLockTest(unittest.TestCase):
     fix is regressed the test fails loudly.
     """
 
-    def _make_widget(self, device_data: dict[int, dict | None],
-                     *, user_templates: dict | None = None):
-        widget = EqTemplatesWidget.__new__(EqTemplatesWidget)
-        widget._slot_device = {1: None, 2: None, 3: None}
-        widget._user_templates = user_templates or {}
-        widget._device_templates = {1: None, 2: None, 3: None}
-        widget._slot_bands = {1: [], 2: [], 3: []}
-        widget._slot_modified = {1: set(), 2: set(), 3: set()}
-        widget._slot_pending = {1: set(), 2: set(), 3: set()}
-        widget._selected_slot = 1
-        widget._device_active_eq = None
-        widget._last_dirty = False
-        widget._loading = False
-        widget._refresh_meter = lambda: None
-        widget._update_apply_enabled = lambda: None
-        widget._emit_dirty_if_changed = lambda: None
-        widget.device = mock.MagicMock()
-
-        def get_name(slot):
-            return device_data[slot]["name"]
-
-        def get_gain(slot):
-            obj = mock.MagicMock()
-            obj.gain = device_data[slot]["gain"]
-            return obj
-
-        def get_fb(slot, band):
-            obj = mock.MagicMock()
-            freq, bw = device_data[slot]["bands"][band]
-            obj.center_freq = freq
-            obj.bandwidth = bw
-            return obj
-
-        widget.device.get_eq_preset_name.side_effect = get_name
-        widget.device.get_eq_preset_gain.side_effect = get_gain
-        widget.device.get_eq_preset_freq_and_bw.side_effect = get_fb
-
-        all_names = sorted(
-            list(templates._EQ_TEMPLATES) + list(widget._user_templates),
-            key=str.casefold,
-        )
-        items = [(n, n) for n in all_names]
-        widget.template_combos = {}
-        for slot in (1, 2, 3):
-            combo = _MockCombo(items=items)
-            combo._signal_handler = (
-                lambda s=slot, w=widget: w._on_template_combo_changed(s)
-            )
-            widget.template_combos[slot] = combo
-        widget.template_radios = {slot: _MockRadio() for slot in (1, 2, 3)}
-        return widget
+    def _make_widget(self, device_data, *, user_templates=None):
+        return _reload_widget(device_data, user_templates=user_templates)
 
     def test_modified_builtin_reload_leaves_pending_empty(self):
         # Regression: previously _slot_pending[1] ended up as {1,2,3,4,5}.
@@ -1275,8 +1284,7 @@ class EqSlotReferenceTest(unittest.TestCase):
     drives reset, sync, the modified marks and the "(on the base)" entry."""
 
     def _reloaded(self, device_data, user_templates=None):
-        widget = EqWidgetReloadUnderLockTest._make_widget(
-            self, device_data, user_templates=user_templates)
+        widget = _reload_widget(device_data, user_templates=user_templates)
         widget.reload_under_lock(active_eq_preset=1)
         return widget
 
@@ -1344,6 +1352,64 @@ class EqSlotReferenceTest(unittest.TestCase):
         self.assertEqual(widget._slot_pending[1], set())
 
 
+class EqSlotReferenceReviewTest(unittest.TestCase):
+    """Follow-ups from the review of #21."""
+
+    def test_delete_shows_what_the_base_holds_even_for_an_edited_builtin(self):
+        # The base holds MEDIA with its own gains: deleting the preset shown in
+        # that slot must not load the MEDIA template and queue it for Sync.
+        media = templates._EQ_TEMPLATES["MEDIA"]
+        mine = {"gain": [1] * 5, "bands": dict(media["bands"])}
+        edited = {"name": "MEDIA", "gain": [7] * 5, "bands": dict(media["bands"])}
+        widget = _reload_widget({1: edited, 2: dict(_ARCTURUS_ON_BASE), 3: dict(_ARCTURUS_ON_BASE)},
+                                user_templates={"MINE": dict(mine)})
+        widget.reload_under_lock(1)
+        combo = widget.template_combos[1]
+        combo.setCurrentIndex(combo.findData("MINE"))
+        with (mock.patch("eq_widget.QMessageBox") as box,
+              mock.patch("eq_widget._save_user_templates")):
+            box.StandardButton.Yes = "yes"
+            box.question.return_value = "yes"
+            widget._on_delete_template_for_slot(1)
+        self.assertEqual(combo.currentData(), "MEDIA")
+        self.assertEqual([g for _f, g in widget._slot_bands[1]], [7] * 5)
+        self.assertEqual(widget._slot_pending[1], set())
+
+    def test_failed_sync_still_rematches_the_slots_already_written(self):
+        widget = _reload_widget({s: dict(_ARCTURUS_ON_BASE) for s in (1, 2, 3)})
+        widget.reload_under_lock(1)
+        for slot in (1, 2):
+            combo = widget.template_combos[slot]
+            combo.setCurrentIndex(combo.findData("MEDIA"))
+        widget.device.set_eq_preset_name.side_effect = (
+            lambda slot, _name: (_ for _ in ()).throw(OSError("unplugged")) if slot == 2 else None)
+        with self.assertRaises(OSError):
+            widget.push_pending_to_device()
+        self.assertEqual(widget._device_templates[1], "MEDIA")
+        self.assertEqual(widget.template_combos[1].findData(EqTemplatesWidget.ON_DEVICE), -1)
+
+    def test_unreadable_slot_shows_no_preset(self):
+        mine = {"gain": [1] * 5, "bands": dict(templates._EQ_TEMPLATES["MEDIA"]["bands"])}
+        device = {1: dict(_ARCTURUS_ON_BASE), 2: dict(mine, name="MINE"), 3: dict(_ARCTURUS_ON_BASE)}
+        widget = _reload_widget(device, user_templates={"MINE": dict(mine)})
+        widget.reload_under_lock(1)
+        self.assertEqual(widget.template_combos[2].currentData(), "MINE")
+        device[2] = None  # the next read of slot 2 fails
+        widget.reload_under_lock(1)
+        self.assertIsNone(widget.template_combos[2].currentData())
+        self.assertEqual(widget._slot_bands[2], [])
+
+    def test_sync_leaves_the_combo_lists_alone_when_the_library_is_unchanged(self):
+        widget = _reload_widget({s: dict(_ARCTURUS_ON_BASE) for s in (1, 2, 3)})
+        widget.reload_under_lock(1)
+        cleared = []
+        for slot, combo in widget.template_combos.items():
+            combo.clear = lambda s=slot, c=combo: (cleared.append(s), _MockCombo.clear(c))
+        widget._on_band_modified(2, 0)
+        widget.push_pending_to_device()
+        self.assertEqual(cleared, [])
+
+
 class EqWidgetImportExportTest(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -1389,15 +1455,22 @@ class EqWidgetImportExportTest(unittest.TestCase):
         self.assertEqual(widget.import_files([self.dir / "MEDIA.astroeq"]), ["MEDIA 2"])
         widget._prompt_new_template_name.assert_called_once_with(suggestion="MEDIA")
 
-    def test_import_loads_the_first_preset_without_reading_the_device(self):
-        # The widget re-matches its slots itself (issue #18), so unsynced EQ
-        # edits are never at stake and the device is not read.
-        window = mock.MagicMock()
-        window.eq.import_presets.return_value = ["ARCTURUS"]
-        gui.A50Window._import_presets(window)
-        window.eq.reload_under_lock.assert_not_called()
-        window.device.get_active_eq_preset.assert_not_called()
-        window.eq.load_into_selected_slot.assert_called_once_with("ARCTURUS")
+    def test_import_rereads_the_eq_slots_unless_edits_are_pending(self):
+        # The base may have changed behind the app (Command Center, in a VM the
+        # base was passed to): re-read it, unless unsynced EQ edits would be
+        # lost; the widget re-matches its slots itself in that case.
+        for pending, reloads in ((False, 1), (True, 0)):
+            with self.subTest(pending=pending):
+                window = mock.MagicMock()
+                window._device_lock = threading.RLock()
+                window.eq.import_presets.return_value = ["ARCTURUS"]
+                window.eq.has_pending.return_value = pending
+                window.device.get_active_eq_preset.return_value = 2
+                gui.A50Window._import_presets(window)
+                self.assertEqual(window.eq.reload_under_lock.call_count, reloads)
+                if reloads:
+                    window.eq.reload_under_lock.assert_called_with(2)
+                window.eq.load_into_selected_slot.assert_called_once_with("ARCTURUS")
 
     def test_load_into_selected_slot_picks_it_in_that_combo(self):
         widget = self._make()
@@ -1439,8 +1512,7 @@ class EqWidgetImportExportTest(unittest.TestCase):
         self.assertTrue(path.exists())  # no second suffix on an upper-case one
 
     def _reloaded(self, device_data, user_templates=None):
-        widget = EqWidgetReloadUnderLockTest._make_widget(
-            self, device_data, user_templates=user_templates)
+        widget = _reload_widget(device_data, user_templates=user_templates)
         widget.reload_under_lock(active_eq_preset=1)
         return widget
 
@@ -1545,7 +1617,7 @@ class SweepRegressionTest(unittest.TestCase):
         foreign = {"name": "FROM ACC", "gain": [1, 2, 3, 4, 5], "bands": bands}
         media = templates._EQ_TEMPLATES["MEDIA"]
         device = {1: foreign, 2: dict(media, name="MEDIA"), 3: dict(media, name="MEDIA")}
-        widget = EqWidgetReloadUnderLockTest._make_widget(self, device)
+        widget = _reload_widget(device)
         widget.reload_under_lock(1)
         self.assertEqual(widget.template_combos[1].currentData(), EqTemplatesWidget.ON_DEVICE)
         self.assertEqual(widget._slot_modified[1], set())
@@ -1599,8 +1671,9 @@ class SweepRegressionTest(unittest.TestCase):
         mine = {"gain": list(media["gain"]), "bands": dict(media["bands"])}
         widget = EqWidgetPushPendingTest._make(
             self, user_templates={"Mine": dict(mine)}, combos={1: "Mine"},
-            slot_bands={1: [(f, g + 1) for f, g in
-                            EqWidgetPushPendingTest._bands_from_template("MEDIA")], 2: [], 3: []},
+            slot_bands={1: [(f, g + 1 if b == 0 else g) for b, (f, g) in
+                            enumerate(EqWidgetPushPendingTest._bands_from_template("MEDIA"))],
+                        2: [], 3: []},
             slot_modified={1: {1}, 2: set(), 3: set()}, slot_pending={1: {1}, 2: set(), 3: set()})
         widget.device.set_eq_preset_gain.side_effect = OSError("unplugged")
         with mock.patch("eq_widget._save_user_templates"), self.assertRaises(OSError):
@@ -1900,6 +1973,7 @@ class SweepRegressionTest(unittest.TestCase):
         widget._slot_bands[2] = [(f, g) for f, g in
                                  EqWidgetPushPendingTest._bands_from_template("MEDIA")]
         widget._device_templates[2] = "Mine"
+        widget._slot_device[2] = dict(mine, name="Mine")
         with mock.patch("eq_widget.QApplication"), mock.patch("eq_widget._save_user_templates"):
             widget._persist_and_push(1, "Mine", is_new=False, btn=mock.MagicMock(),
                                      busy_key="btn_save_eq_busy", idle_key="btn_save_eq")
