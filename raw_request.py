@@ -6,7 +6,7 @@ get_headset_firmware_version). This module remains to dump the raw
 response payloads shown in the dialog — including opcode 0x83 (firmware
 info), which has no public wrapper.
 """
-from vendor.eh_fifty import Device
+from device_handle import DeviceHandle
 
 _OP_DEVICE_INFO = 0x03
 _OP_FIRMWARE_INFO = 0x83
@@ -15,7 +15,11 @@ _OP_HEADSET_FW_MAJOR = 0xDA
 _OP_HEADSET_FW_MINOR = 0xD6
 
 
-def _raw_request(device: Device, opcode: int, payload: bytes = b"") -> bytes:
+class RawRequestError(Exception):
+    """The base answered a raw request with an ERROR status."""
+
+
+def _raw_request(device: DeviceHandle, opcode: int, payload: bytes = b"") -> bytes:
     """Issue a raw HID request bypassing eh_fifty's _CommandType whitelist.
 
     Returns the response payload (bytes after the [0x02, status, len] header).
@@ -28,4 +32,10 @@ def _raw_request(device: Device, opcode: int, payload: bytes = b"") -> bytes:
     if not resp or resp[0] != 0x02 or len(resp) < 3:
         raise ValueError(f"unexpected response: {resp.hex()}")
     length = min(resp[2], len(resp) - 3)
-    return resp[3:3 + length]
+    payload = resp[3:3 + length]
+    if resp[1] == 0x01:
+        # ERROR answer: 4 status bytes, then a NUL-terminated reason such as
+        # HID_ERROR_SLAVE_NO_SLAVE (headset off and undocked).
+        reason = payload[4:].split(b"\x00", 1)[0].decode("ascii", "replace")
+        raise RawRequestError(f"0x{opcode:02x}: {reason or payload.hex()}")
+    return payload

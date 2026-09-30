@@ -85,7 +85,9 @@ sudo udevadm trigger --action=change --attr-match=idVendor=9886 --attr-match=idP
 ```
 
 Or install a KDE menu entry from inside the GUI: **Outils → Installer dans le
-menu KDE**.
+menu KDE**. The package ships its own entry, so run from the package the GUI
+only offers **Retirer du menu KDE**, and only while an entry installed earlier
+from a checkout still hides the package's.
 
 ## Architecture
 
@@ -103,6 +105,7 @@ The application is split into focused modules:
 | `raw_request.py`     | Raw HID opcodes outside eh-fifty's public API (FW info etc.)  |
 | `process_lock.py`    | Single-instance helper (`/proc` scan, kill stale GUIs)        |
 | `status_worker.py`   | `QObject` worker polling status on a `QThread`                |
+| `device_handle.py`   | Reopenable handle on the base, shared by all of the above     |
 | `base_info_dialog.py`| Formats the "Informations base" dialog content                |
 | `menu_install.py`    | KDE menu entry install / remove (.desktop file)               |
 
@@ -159,7 +162,8 @@ a JSON library on disk; only their *content* gets pushed to a slot.
 
 - `gui.py`, `eq_widget.py`, `eq_meter.py`, `templates.py`, `i18n.py`,
   `settings.py`, `themes.py`, `raw_request.py`, `process_lock.py`,
-  `status_worker.py`, `base_info_dialog.py`, `menu_install.py` — application code
+  `status_worker.py`, `device_handle.py`, `base_info_dialog.py`,
+  `menu_install.py` — application code
 - `themes/` — colour palettes for the Theme menu (JSON)
 - `tests.py` — unit tests (run with `.venv/bin/python -m unittest tests.py`)
 - `scripts/` — reverse-engineering helpers (USB sniffing, one-shot probes,
@@ -175,7 +179,8 @@ a JSON library on disk; only their *content* gets pushed to a slot.
 Covers:
 - Shape and bounds of every builtin EQ template
 - User-template JSON round-trip and malformed-entry tolerance
-- BCD / datetime helpers used to decode firmware build info
+- Base info dialog: every value and raw dump shown, a failed read shown as
+  n/a with its reason
 - `i18n.t()` lookups, fallback to English, kwargs formatting, same keys and
   placeholders in every language
 - Language priority (`A50_LANG`, menu choice, system locale) and when a

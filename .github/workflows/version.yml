@@ -1,8 +1,14 @@
 name: Bump version
 
 # Triggers on push to main (= a PR has just been merged). Reads the
-# merged PR's bump:<level> label, bumps pyproject.toml's [project].version
-# accordingly, commits the change and creates the matching git tag.
+# bump:<level> labels of every PR merged since the last v* tag, bumps
+# pyproject.toml's [project].version by the highest one, commits the change
+# and creates the matching git tag.
+#
+# Every merge since the last tag, not only the one that triggered the run:
+# the concurrency group keeps a single pending run and cancels the one it
+# replaces, so a merge landing while a bump runs would otherwise lose its bump.
+# The run that does execute checks out the tip of main and picks it up.
 #
 # No label = no bump: the workflow exits cleanly without touching anything.
 
@@ -30,6 +36,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           token: ${{ secrets.BUMP_TOKEN }}
+          ref: main
           fetch-depth: 0
 
       - name: Skip if HEAD already tagged
@@ -41,34 +48,42 @@ jobs:
             echo "skip=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Find merged PR
-        if: steps.check.outputs.skip == 'false'
-        id: pr
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          COMMIT_SHA: ${{ github.sha }}
-        run: |
-          PR=$(gh pr list --state merged --base main --limit 5 --json number,mergeCommit \
-            --jq ".[] | select(.mergeCommit.oid == \"$COMMIT_SHA\") | .number")
-          echo "number=$PR" >> $GITHUB_OUTPUT
-
-      - name: Resolve bump type from PR label
+      - name: Resolve bump type from merged PR labels
         if: steps.check.outputs.skip == 'false'
         id: bump
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ steps.pr.outputs.number }}
         run: |
+          # First-parent commits of main since the last v* tag (all of main if
+          # there is none). The bump and PKGBUILD commits have no PR: level none.
+          LAST_TAG=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)
+          RANGE=${LAST_TAG:+$LAST_TAG..}HEAD
+          HEAD_SHA=$(git rev-parse HEAD)
           TYPE=none
-          if [ -n "$PR_NUMBER" ]; then
-            LABELS=$(gh pr view "$PR_NUMBER" --json labels --jq '[.labels[].name] | join(",")')
-            if   echo "$LABELS" | grep -q "bump:major"; then TYPE=major
-            elif echo "$LABELS" | grep -q "bump:minor"; then TYPE=minor
-            elif echo "$LABELS" | grep -q "bump:patch"; then TYPE=patch
+          rank() { case "$1" in major) echo 3 ;; minor) echo 2 ;; patch) echo 1 ;; *) echo 0 ;; esac; }
+          for SHA in $(git rev-list --first-parent "$RANGE"); do
+            # GitHub links a commit to its PR asynchronously: retry briefly for
+            # the newest commit only (older ones are linked by now).
+            TRIES=1; [ "$SHA" = "$HEAD_SHA" ] && TRIES=6
+            PR=
+            for attempt in $(seq "$TRIES"); do
+              PR=$(gh api "repos/$GITHUB_REPOSITORY/commits/$SHA/pulls" \
+                --jq '[.[] | select(.merged_at != null and .base.ref == "main")][0].number // empty')
+              [ -n "$PR" ] && break
+              [ "$attempt" -lt "$TRIES" ] && sleep 5
+            done
+            [ -z "$PR" ] && continue
+            LABELS=$(gh pr view "$PR" --json labels --jq '[.labels[].name] | join(",")')
+            LEVEL=none
+            if   echo "$LABELS" | grep -q "bump:major"; then LEVEL=major
+            elif echo "$LABELS" | grep -q "bump:minor"; then LEVEL=minor
+            elif echo "$LABELS" | grep -q "bump:patch"; then LEVEL=patch
             fi
-          fi
+            echo "PR #$PR ($SHA): $LEVEL"
+            [ "$(rank "$LEVEL")" -gt "$(rank "$TYPE")" ] && TYPE=$LEVEL
+          done
           echo "type=$TYPE" >> $GITHUB_OUTPUT
-          echo "Bump type: $TYPE (PR #${PR_NUMBER:-none})"
+          echo "Bump type: $TYPE (since ${LAST_TAG:-the first commit})"
 
       - name: Compute new version
         if: steps.check.outputs.skip == 'false' && steps.bump.outputs.type != 'none'

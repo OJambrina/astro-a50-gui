@@ -1,7 +1,7 @@
 # Maintainer: manuacl <manu dot acl at gmail dot com>
 
 pkgname=astro-a50-gui
-pkgver=0.1.3
+pkgver=0.5.0
 pkgrel=1
 pkgdesc="Qt GUI to configure the Astro A50 Gen 4 wireless headset (EQ, balance, mic, noise gate)"
 arch=('any')
@@ -9,7 +9,7 @@ url="https://github.com/manuacl/astro-a50-gui"
 license=('GPL-3.0-or-later' 'MIT')
 depends=('python' 'python-pyqt6' 'python-pyusb')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('738fa8a7a8c9c81903a45746dfdcb599531b66366c1a1850d50c0626b23c7886')
+sha256sums=('47f3e70847f7810152ebaba47d58660d309b6f21e28f1f8aa4df3155a0b33625')
 
 check() {
   cd "$pkgname-$pkgver"
@@ -23,6 +23,8 @@ package() {
   install -Dm644 -t "$pkgdir$app" $(ls *.py | grep -vx tests.py)
   install -Dm644 -t "$pkgdir$app/vendor" vendor/*.py
   install -Dm644 -t "$pkgdir$app/themes" themes/*.json
+  # gui.py reads its version from it, for the About dialog.
+  install -Dm644 -t "$pkgdir$app" pyproject.toml
   python -m compileall -q -d "$app" "$pkgdir$app"
 
   install -Dm755 /dev/stdin "$pkgdir/usr/bin/$pkgname" <<EOF

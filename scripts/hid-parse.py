@@ -14,7 +14,7 @@ In usbmon text-mode lines look like:
 We pair each `S Io` (submission with payload) with the next `C Ii` (completed
 read with payload) on the same endpoint to form a logical request/response.
 
-Known opcodes are loaded from eh_fifty._CommandType so we can label them.
+Known opcodes are loaded from vendor.eh_fifty._CommandType so we can label them.
 """
 import argparse
 import re
@@ -22,24 +22,22 @@ import sys
 from collections import deque
 from pathlib import Path
 
-# Make eh_fifty importable from the venv so we can label known opcodes.
-VENV_SITE = Path(__file__).parent / ".venv" / "lib"
-for site in VENV_SITE.glob("python*/site-packages"):
-    sys.path.insert(0, str(site))
+# Make the vendored eh_fifty importable (repo root) so we can label known opcodes.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 try:
-    from eh_fifty import _CommandType  # type: ignore[attr-defined]
+    from vendor.eh_fifty import _CommandType  # type: ignore[attr-defined]
     KNOWN_OPCODES = {c.value: c.name for c in _CommandType}
-except Exception:
+except ImportError:
     KNOWN_OPCODES = {}
 
 
 # Example line:
-#   ffff8f1b729cac00 1158406211 S Io:017:05 -115 2 = 0254
-# usbmon text mode uses "Type:Dev:EP" (bus is implicit via /sys/.../usbmon/Nt).
+#   ffff8f1b729cac00 1158406211 S Io:1:017:5 -115 2 = 0254
+# usbmon text mode uses "Type:Bus:Dev:EP" (Dev zero-padded, EP not).
 LINE_RE = re.compile(
     r"^(?P<tag>\S+)\s+(?P<ts>\S+)\s+(?P<event>[SCE])\s+"
-    r"(?P<type>[BCIZ][io]):(?P<dev>\d+):(?P<ep>\d+)\s+"
+    r"(?P<type>[BCIZ][io]):(?P<bus>\d+):(?P<dev>\d+):(?P<ep>\d+)\s+"
     r"(?P<rest>.*)$"
 )
 
