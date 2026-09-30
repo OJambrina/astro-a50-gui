@@ -223,8 +223,10 @@ class EqTemplatesWidget(QGroupBox):
                 for b, (freq, bw) in device_bands.items():
                     self.device.set_eq_preset_freq_and_bw(slot, b, freq, bw)
                 # Only once the device took it: a failed write keeps the preset
-                # and its orange marks as they were.
-                if name in self._user_templates:
+                # and its orange marks as they were. Only a slot showing the user
+                # preset redefines it, not the base's own values that happen to
+                # carry its name.
+                if self.template_combos[slot].currentData() in self._user_templates:
                     self._user_templates[name] = {
                         "gain": list(gain),
                         "bands": dict(device_bands),
@@ -557,7 +559,12 @@ class EqTemplatesWidget(QGroupBox):
                 combo.clear()
                 for name in all_names:
                     combo.addItem(self._template_icon(name), name, name)
-            self._sync_device_item(slot)
+            # A slot with unsynced edits on the base's own values keeps them as
+            # its reference, even once a template takes that name (an import):
+            # its Sync must not write that template's bandwidths.
+            self._sync_device_item(slot, keep=(
+                current == self.ON_DEVICE and bool(self._slot_pending[slot])
+                and self._device_templates.get(slot) is None))
             if current == self.ON_DEVICE and combo.findData(current) < 0:
                 # Its name became a template (an import): show the slot under it
                 # instead of falling back to the first template.
@@ -568,7 +575,7 @@ class EqTemplatesWidget(QGroupBox):
                     combo.setCurrentIndex(idx)
             combo.blockSignals(was_blocked)
 
-    def _sync_device_item(self, slot: int) -> None:
+    def _sync_device_item(self, slot: int, keep: bool = False) -> None:
         """Show the "<name> (on the base)" entry only while the slot holds a
         preset that matches no template and isn't named after one."""
         combo = self.template_combos[slot]
@@ -576,7 +583,7 @@ class EqTemplatesWidget(QGroupBox):
         if idx >= 0:
             combo.removeItem(idx)
         data = self._slot_device.get(slot)
-        if self._device_target(slot) == self.ON_DEVICE:
+        if data is not None and (keep or self._device_target(slot) == self.ON_DEVICE):
             label = t("device_preset", name=data["name"] or t("preset_n", n=slot))
             icon = QIcon.fromTheme("audio-headset")
             if icon.isNull():

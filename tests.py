@@ -1283,6 +1283,14 @@ class EqSlotReferenceTest(unittest.TestCase):
     """Issue #18: a slot's reference (a template, or the base's own values)
     drives reset, sync, the modified marks and the "(on the base)" entry."""
 
+    def setUp(self):
+        # Never the real library: a sync or delete here may save it.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        patcher = mock.patch.object(templates, "USER_TEMPLATES_FILE", Path(tmp.name) / "user.json")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def _reloaded(self, device_data, user_templates=None):
         widget = _reload_widget(device_data, user_templates=user_templates)
         widget.reload_under_lock(active_eq_preset=1)
@@ -1355,6 +1363,14 @@ class EqSlotReferenceTest(unittest.TestCase):
 class EqSlotReferenceReviewTest(unittest.TestCase):
     """Follow-ups from the review of #21."""
 
+    def setUp(self):
+        # Never the real library: a sync or delete here may save it.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        patcher = mock.patch.object(templates, "USER_TEMPLATES_FILE", Path(tmp.name) / "user.json")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_delete_shows_what_the_base_holds_even_for_an_edited_builtin(self):
         # The base holds MEDIA with its own gains: deleting the preset shown in
         # that slot must not load the MEDIA template and queue it for Sync.
@@ -1413,6 +1429,14 @@ class EqSlotReferenceReviewTest(unittest.TestCase):
 class EqSlotReferenceSecondReviewTest(unittest.TestCase):
     """Follow-ups from the second review of #21."""
 
+    def setUp(self):
+        # Never the real library: a sync or delete here may save it.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        patcher = mock.patch.object(templates, "USER_TEMPLATES_FILE", Path(tmp.name) / "user.json")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_bandwidths_set_elsewhere_are_marked_until_a_sync_is_queued(self):
         # The base holds MEDIA's name, gains and frequencies with its own
         # bandwidths (set in Command Center): the bands differ from MEDIA.
@@ -1456,6 +1480,28 @@ class EqSlotReferenceSecondReviewTest(unittest.TestCase):
             widget.import_files([path])
         self.assertEqual(widget.template_combos[2].currentData(), "Mine")
         self.assertEqual(widget._slot_pending[2], set())
+
+    def test_import_of_the_same_name_keeps_a_pending_base_entry(self):
+        # Slot 1 shows "ARCTURUS (on the base)" with an unsynced edit; a file of
+        # that name with other bandwidths is imported. The slot keeps the
+        # base's own values: Sync must not write the file's bandwidths.
+        arc = dict(_ARCTURUS_ON_BASE)
+        widget = _reload_widget({s: dict(arc) for s in (1, 2, 3)})
+        widget.reload_under_lock(1)
+        widget._on_band_modified(2, 0)
+        file_bands = {b: (f, bw + 500 if bw else 0) for b, (f, bw) in arc["bands"].items()}
+        path = Path(tempfile.mkdtemp()) / "ARCTURUS.astroeq"
+        self.addCleanup(shutil.rmtree, path.parent)
+        path.write_text(astroeq.dump("ARCTURUS", {"gain": arc["gain"], "bands": file_bands}))
+        with mock.patch("eq_widget._save_user_templates"):
+            widget.import_files([path])
+        self.assertEqual(widget.template_combos[1].currentData(), EqTemplatesWidget.ON_DEVICE)
+        widget.push_pending_to_device()
+        widget.device.set_eq_preset_name.assert_called_with(1, "ARCTURUS")
+        widget.device.set_eq_preset_freq_and_bw.assert_any_call(1, 2, 1775, 9011)
+        # Synced, it shows the file's template, marked where the bandwidths differ.
+        self.assertEqual(widget.template_combos[1].currentData(), "ARCTURUS")
+        self.assertEqual(widget._slot_modified[1], {2, 3, 4})
 
     def test_failed_sync_refreshes_the_meter_and_buttons(self):
         widget = _reload_widget({s: dict(_ARCTURUS_ON_BASE) for s in (1, 2, 3)})
