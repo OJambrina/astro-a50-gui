@@ -37,7 +37,7 @@ def install_entry(
     if legacy_desktop_file.exists():
         legacy_desktop_file.unlink()
     _refresh_desktop_db(apps_dir)
-    if _system_entry(desktop_file.name):
+    if _system_entry(apps_dir, desktop_file.name):
         return t("msg_menu_installed_system")
     return t("msg_menu_installed")
 
@@ -57,18 +57,30 @@ def remove_entry(
     if removed:
         _refresh_desktop_db(apps_dir)
     # A package's entry of the same name stays in the menu (issue #19).
-    if _system_entry(desktop_file.name):
+    if _system_entry(apps_dir, desktop_file.name):
         return t("msg_menu_removed_system" if removed else "msg_menu_absent_system")
     return t("msg_menu_removed" if removed else "msg_menu_absent")
 
 
-def _system_entry(name: str) -> Path | None:
+def own_entry(path: Path) -> bool:
+    """Whether `path` is an entry written by install_entry, which runs gui.py,
+    rather than the menu editor's copy of the package's entry (same file name,
+    Exec=astro-a50-gui)."""
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        return False
+    return any(line.startswith("Exec=") and "gui.py" in line for line in text.splitlines())
+
+
+def _system_entry(apps_dir: Path, name: str) -> Path | None:
     """The system-wide .desktop file of this name (e.g. from the package), which
-    the user entry shadows while it exists."""
+    the user entry shadows while it exists. `apps_dir`, the user's own, is
+    skipped: some sessions list it in XDG_DATA_DIRS too."""
     dirs = os.environ.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share"
     for d in dirs.split(":"):
         path = Path(d) / "applications" / name
-        if d and path.is_file():
+        if d and path.parent.resolve() != apps_dir.resolve() and path.is_file():
             return path
     return None
 

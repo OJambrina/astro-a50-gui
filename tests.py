@@ -1085,13 +1085,18 @@ class MenuSlotsTest(unittest.TestCase):
         window._build_language_menu = window._build_theme_menu = lambda _p: mock.MagicMock()
         with tempfile.TemporaryDirectory() as tmp:
             user_entry = Path(tmp) / "a.desktop"
-            for packaged, has_user_entry, install, remove in (
-                (False, False, True, True),
-                (True, False, False, False),
-                (True, True, False, True),
+            ours = "[Desktop Entry]\nExec=/venv/bin/python /src/gui.py\n"
+            kmenuedit = "[Desktop Entry]\nName=Mine\nExec=astro-a50-gui\n"
+            for packaged, content, install, remove in (
+                (False, None, True, True),
+                (True, None, False, False),
+                (True, ours, False, True),
+                (True, kmenuedit, False, False),  # the user's own edit of the package entry
             ):
-                if has_user_entry:
-                    user_entry.write_text("x")
+                if content is None:
+                    user_entry.unlink(missing_ok=True)
+                else:
+                    user_entry.write_text(content)
                 with (mock.patch.object(gui, "PACKAGED", packaged),
                       mock.patch.object(gui, "DESKTOP_FILE", user_entry),
                       mock.patch.object(gui, "LEGACY_DESKTOP_FILE", Path(tmp) / "old.desktop"),
@@ -1101,6 +1106,18 @@ class MenuSlotsTest(unittest.TestCase):
                 self.assertEqual(gui.t("act_install_menu") in texts, install)
                 self.assertEqual(gui.t("act_remove_menu") in texts, remove)
                 self.assertIn(gui.t("act_about"), texts)
+
+    def test_packaged_remove_hides_itself_once_done(self):
+        window = self._window()
+        for packaged, error, hidden in ((True, None, True), (True, OSError("ro"), False),
+                                        (False, None, False)):
+            window._act_remove.reset_mock()
+            with (mock.patch.object(gui, "PACKAGED", packaged),
+                  mock.patch.object(gui, "remove_entry", side_effect=error, return_value="ok"),
+                  mock.patch.object(gui.QMessageBox, "warning")):
+                gui.A50Window._remove_menu_entry(window)
+            self.assertEqual(window._act_remove.setVisible.call_args_list,
+                             [mock.call(False)] if hidden else [])
 
     def test_unwritable_config_warns_instead_of_crashing(self):
         window = self._window()
@@ -1406,9 +1423,11 @@ class SweepRegressionTest(unittest.TestCase):
         import menu_install
         from i18n import t
         with tempfile.TemporaryDirectory() as user, tempfile.TemporaryDirectory() as system:
-            apps = Path(user)
+            apps = Path(user) / "applications"
             args = (apps, apps / "a.desktop", apps / "old.desktop")
-            with mock.patch.dict(os.environ, {"XDG_DATA_DIRS": f"/nonexistent:{system}"}):
+            # The user's own data dir may be listed too: its entry is not the package's.
+            dirs = f"{user}:/nonexistent:{system}"
+            with mock.patch.dict(os.environ, {"XDG_DATA_DIRS": dirs}):
                 self.assertEqual(menu_install.install_entry(*args, "p", Path("/x.py")),
                                  t("msg_menu_installed"))
                 self.assertEqual(menu_install.remove_entry(*args), t("msg_menu_removed"))
