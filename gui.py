@@ -335,15 +335,10 @@ class A50Window(QMainWindow):
 
     def _import_presets(self):
         try:
+            # The widget re-matches its slots itself: those already holding the
+            # imported presets show their names without reading the device.
             imported = self.eq.import_presets()
             if imported:
-                if not self.eq.has_pending():
-                    # Re-read the EQ slots and the active one first, so slots
-                    # already holding these presets show their names. Only the
-                    # EQ part, and only without unsynced EQ edits, which a
-                    # reload would discard.
-                    with self._device_lock:
-                        self.eq.reload_under_lock(safe(self.device.get_active_eq_preset))
                 # Importing a preset means using it: load the first one into
                 # the selected EQ slot, pending until synced.
                 self.eq.load_into_selected_slot(imported[0])

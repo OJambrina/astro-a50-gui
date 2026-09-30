@@ -5,9 +5,9 @@ Run with:
 """
 import json
 import os
+import shutil
 import string
 import tempfile
-import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -1270,6 +1270,80 @@ class AstroEqTest(unittest.TestCase):
         self.assertIn("Eq_Bandwidth_3=2\r\n", text)
 
 
+class EqSlotReferenceTest(unittest.TestCase):
+    """Issue #18: a slot's reference (a template, or the base's own values)
+    drives reset, sync, the modified marks and the "(on the base)" entry."""
+
+    def _reloaded(self, device_data, user_templates=None):
+        widget = EqWidgetReloadUnderLockTest._make_widget(
+            self, device_data, user_templates=user_templates)
+        widget.reload_under_lock(active_eq_preset=1)
+        return widget
+
+    def _arcturus_everywhere(self):
+        return self._reloaded({s: dict(_ARCTURUS_ON_BASE) for s in (1, 2, 3)})
+
+    def test_on_base_entry_follows_a_sync(self):
+        # B1: after syncing MEDIA over it, the slot no longer offers the old
+        # "ARCTURUS (on the base)" entry, which would load MEDIA's values.
+        widget = self._arcturus_everywhere()
+        combo = widget.template_combos[1]
+        combo.setCurrentIndex(combo.findData("MEDIA"))
+        widget.push_pending_to_device()
+        self.assertEqual(combo.findData(EqTemplatesWidget.ON_DEVICE), -1)
+        self.assertEqual(combo.currentData(), "MEDIA")
+
+    def test_reset_on_the_base_entry_restores_its_values(self):
+        # B2
+        widget = self._arcturus_everywhere()
+        original = list(widget._slot_bands[1])
+        widget._on_band_modified(2, 0)
+        widget._on_reset_templates()
+        self.assertEqual(widget._slot_bands[1], original)
+        self.assertEqual(widget._slot_modified[1], set())
+        self.assertEqual(widget._slot_pending[1], set())
+
+    def test_synced_edit_on_the_base_entry_is_no_longer_marked(self):
+        # B3: the base now holds exactly the edited values.
+        widget = self._arcturus_everywhere()
+        widget._on_band_modified(2, 0)
+        widget.push_pending_to_device()
+        self.assertEqual(widget._slot_modified[1], set())
+        self.assertEqual(widget.template_combos[1].currentData(), EqTemplatesWidget.ON_DEVICE)
+
+    def test_import_names_a_slot_holding_that_preset_without_reading_the_base(self):
+        # What gui.py re-read the device for: now the widget re-matches itself.
+        widget = self._arcturus_everywhere()
+        widget.device.reset_mock()
+        arc = _ARCTURUS_ON_BASE
+        path = Path(tempfile.mkdtemp()) / "ARCTURUS.astroeq"
+        self.addCleanup(shutil.rmtree, path.parent)
+        path.write_text(astroeq.dump("ARCTURUS", {"gain": arc["gain"], "bands": arc["bands"]}))
+        with mock.patch("eq_widget._save_user_templates"):
+            widget.import_files([path])
+        for slot in (1, 2, 3):
+            self.assertEqual(widget.template_combos[slot].currentData(), "ARCTURUS")
+            self.assertEqual(widget._slot_modified[slot], set())
+            self.assertEqual(widget._slot_pending[slot], set())
+        widget.device.get_eq_preset_name.assert_not_called()
+
+    def test_deleting_the_preset_a_slot_holds_shows_the_base_values(self):
+        # Before: the slot fell back to the first template with a pending
+        # Sync, which would rename the device's slot.
+        mine = {"gain": [1] * 5, "bands": dict(templates._EQ_TEMPLATES["MEDIA"]["bands"])}
+        widget = self._reloaded({1: dict(mine, name="MINE"), 2: dict(_ARCTURUS_ON_BASE),
+                                 3: dict(_ARCTURUS_ON_BASE)}, user_templates={"MINE": dict(mine)})
+        self.assertEqual(widget.template_combos[1].currentData(), "MINE")
+        with (mock.patch("eq_widget.QMessageBox") as box,
+              mock.patch("eq_widget._save_user_templates")):
+            box.StandardButton.Yes = "yes"
+            box.question.return_value = "yes"
+            widget._on_delete_template_for_slot(1)
+        self.assertEqual(widget.template_combos[1].currentData(), EqTemplatesWidget.ON_DEVICE)
+        self.assertEqual([g for _f, g in widget._slot_bands[1]], [1] * 5)
+        self.assertEqual(widget._slot_pending[1], set())
+
+
 class EqWidgetImportExportTest(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -1282,7 +1356,9 @@ class EqWidgetImportExportTest(unittest.TestCase):
     def _make(self):
         widget = EqTemplatesWidget.__new__(EqTemplatesWidget)
         widget._user_templates = {}
-        widget._refresh_combos = mock.MagicMock()
+        for name in ("_rematch", "_refresh_meter", "_update_apply_enabled",
+                     "_emit_dirty_if_changed"):
+            setattr(widget, name, mock.MagicMock())
         return widget
 
     def test_import_adds_presets_named_after_their_files(self):
@@ -1295,7 +1371,7 @@ class EqWidgetImportExportTest(unittest.TestCase):
         warning.assert_called_once()  # the broken file is reported, not fatal
         saved = templates._load_user_templates()
         self.assertEqual(saved["ARCTURUS"], _ARCTURUS_TEMPLATE)
-        widget._refresh_combos.assert_called_once()
+        widget._rematch.assert_called_once()
 
     def test_reimporting_an_identical_preset_asks_nothing(self):
         (self.dir / "ARCTURUS.astroeq").write_text(_ARCTURUS, encoding="utf-8")
@@ -1304,7 +1380,7 @@ class EqWidgetImportExportTest(unittest.TestCase):
         widget._prompt_new_template_name = mock.MagicMock()
         self.assertEqual(widget.import_files([self.dir / "ARCTURUS.astroeq"]), ["ARCTURUS"])
         widget._prompt_new_template_name.assert_not_called()
-        widget._refresh_combos.assert_not_called()  # nothing new to save or list
+        widget._rematch.assert_not_called()  # nothing new to save or list
 
     def test_import_name_clash_asks_for_another_name(self):
         (self.dir / "MEDIA.astroeq").write_text(_ARCTURUS, encoding="utf-8")
@@ -1313,22 +1389,15 @@ class EqWidgetImportExportTest(unittest.TestCase):
         self.assertEqual(widget.import_files([self.dir / "MEDIA.astroeq"]), ["MEDIA 2"])
         widget._prompt_new_template_name.assert_called_once_with(suggestion="MEDIA")
 
-    def test_import_rereads_the_eq_slots_unless_edits_are_pending(self):
-        # After an import, slots already holding those presets must show their
-        # names without pressing Refresh, but unsynced EQ edits are kept.
-        for pending, reloads in ((False, 1), (True, 0)):
-            with self.subTest(pending=pending):
-                window = mock.MagicMock()
-                window._device_lock = threading.RLock()
-                window.eq.import_presets.return_value = ["ARCTURUS"]
-                window.eq.has_pending.return_value = pending
-                window.device.get_active_eq_preset.return_value = 2
-                gui.A50Window._import_presets(window)
-                self.assertEqual(window.eq.reload_under_lock.call_count, reloads)
-                if reloads:
-                    window.eq.reload_under_lock.assert_called_with(2)
-                # Either way, the first imported preset goes into the selected slot.
-                window.eq.load_into_selected_slot.assert_called_once_with("ARCTURUS")
+    def test_import_loads_the_first_preset_without_reading_the_device(self):
+        # The widget re-matches its slots itself (issue #18), so unsynced EQ
+        # edits are never at stake and the device is not read.
+        window = mock.MagicMock()
+        window.eq.import_presets.return_value = ["ARCTURUS"]
+        gui.A50Window._import_presets(window)
+        window.eq.reload_under_lock.assert_not_called()
+        window.device.get_active_eq_preset.assert_not_called()
+        window.eq.load_into_selected_slot.assert_called_once_with("ARCTURUS")
 
     def test_load_into_selected_slot_picks_it_in_that_combo(self):
         widget = self._make()

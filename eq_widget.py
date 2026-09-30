@@ -52,6 +52,11 @@ from templates import _EQ_TEMPLATES, _load_user_templates, _save_user_templates
 MAX_NAME_BYTES = 58
 
 
+def _values(preset: dict) -> list[tuple[int, int]]:
+    """A preset's (frequency, gain) per band, as the meter shows them."""
+    return [(preset["bands"][b][0], preset["gain"][b - 1]) for b in range(1, 6)]
+
+
 class EqTemplatesWidget(QGroupBox):
     """Self-contained 5-band EQ + 3-slot preset editor."""
 
@@ -166,41 +171,12 @@ class EqTemplatesWidget(QGroupBox):
         """
         self._loading = True
         try:
-            slot_data = {slot: self._read_slot(slot) for slot in self.template_combos}
-            for slot, combo in self.template_combos.items():
-                data = slot_data[slot]
+            for slot in self.template_combos:
+                data = self._read_slot(slot)
                 self._slot_device[slot] = data
-                if data is None:
-                    self._slot_bands[slot] = []
-                else:
-                    self._slot_bands[slot] = [
-                        (data["bands"][b][0], data["gain"][b - 1])
-                        for b in range(1, 6)
-                    ]
+                self._slot_bands[slot] = [] if data is None else _values(data)
                 self._slot_pending[slot].clear()
-                all_tpls = self._all_templates()
-                detected = self._match_template(data) if data else None
-                self._device_templates[slot] = detected
-                target = detected
-                if target is None and data is not None and data["name"] in all_tpls:
-                    target = data["name"]
-                was_blocked = combo.blockSignals(True)
-                self._sync_device_item(slot)
-                if target is None and data is not None:
-                    target = self.ON_DEVICE  # unknown preset: show it by its own name
-                idx = combo.findData(target) if target else 0
-                idx = max(idx, 0)
-                combo.setCurrentIndex(idx)
-                combo.blockSignals(was_blocked)
-                modified: set[int] = set()
-                tpl_name = combo.itemData(idx)
-                if data is not None and tpl_name in all_tpls:
-                    tpl = all_tpls[tpl_name]
-                    for b in range(1, 6):
-                        if (data["gain"][b - 1] != tpl["gain"][b - 1]
-                                or data["bands"][b] != tpl["bands"][b]):
-                            modified.add(b)
-                self._slot_modified[slot] = modified
+            self._rematch()
             self._device_active_eq = active_eq_preset
             if active_eq_preset is not None and active_eq_preset in self.template_radios:
                 self.template_radios[active_eq_preset].setChecked(True)
@@ -223,29 +199,17 @@ class EqTemplatesWidget(QGroupBox):
         overwritten.
 
         Caller must hold ``self._device_lock``."""
-        all_tpls = self._all_templates()
         user_templates_changed = False
         try:
-            for slot, combo in self.template_combos.items():
+            for slot in self.template_combos:
                 if not self._slot_pending[slot]:
                     continue
                 bands = self._slot_bands[slot]
                 if not bands:
                     continue
-                name = combo.currentData() or ""
-                device = self._slot_device.get(slot)
-                if name == self.ON_DEVICE and device is not None:
-                    # A preset the base holds but no template matches: keep its own
-                    # name and bandwidths instead of borrowing another template's.
-                    name = device["name"]
-                    bw_source = device["bands"]
-                else:
-                    bw_source = all_tpls.get(name, _EQ_TEMPLATES["MEDIA"])["bands"]
+                name = self._reference_name(slot)
                 gain = [g for (_freq, g) in bands]
-                device_bands = {
-                    b: (bands[b - 1][0], 0 if b in (1, 5) else bw_source[b][1])
-                    for b in range(1, 6)
-                }
+                device_bands = self._device_bands(slot)
                 self.device.set_eq_preset_name(slot, name)
                 self.device.set_eq_preset_gain(slot, gain)
                 for b, (freq, bw) in device_bands.items():
@@ -258,10 +222,7 @@ class EqTemplatesWidget(QGroupBox):
                         "bands": dict(device_bands),
                     }
                     user_templates_changed = True
-                    self._slot_modified[slot].clear()
-                data = {"name": name, "gain": gain, "bands": device_bands}
-                self._slot_device[slot] = data
-                self._device_templates[slot] = self._match_template(data)
+                self._slot_device[slot] = {"name": name, "gain": gain, "bands": device_bands}
                 self._slot_pending[slot].clear()
         finally:
             # Presets the device already took are saved even when a later
@@ -272,6 +233,7 @@ class EqTemplatesWidget(QGroupBox):
                 and self._selected_slot != self._device_active_eq):
             self.device.set_active_eq_preset(self._selected_slot)
             self._device_active_eq = self._selected_slot
+        self._rematch()
         self._refresh_meter()
         self._update_apply_enabled()
         self._emit_dirty_if_changed()
@@ -287,10 +249,7 @@ class EqTemplatesWidget(QGroupBox):
             return
         freq, _old = bands[band - 1]
         bands[band - 1] = (freq, gain)
-        if self._is_band_off_template(slot, band):
-            self._slot_modified[slot].add(band)
-        else:
-            self._slot_modified[slot].discard(band)
+        self._update_modified(slot)
         self._slot_pending[slot].add(band)
         self._refresh_meter()
         self._update_apply_enabled()
@@ -310,26 +269,15 @@ class EqTemplatesWidget(QGroupBox):
 
     def _on_template_combo_changed(self, slot: int) -> None:
         desired = self.template_combos[slot].currentData()
-        all_tpls = self._all_templates()
-        self._slot_modified[slot].clear()
-        device = self._slot_device.get(slot)
-        if desired == self.ON_DEVICE:
-            # Back to what the base holds: its own values, nothing to push.
-            if device is not None:
-                self._slot_bands[slot] = [
-                    (device["bands"][b][0], device["gain"][b - 1]) for b in range(1, 6)
-                ]
+        ref = self._reference(slot)
+        if ref is not None:
+            self._slot_bands[slot] = _values(ref)
+        # The base's own values, or the template it already holds: nothing to push.
+        if desired in (self.ON_DEVICE, self._device_templates.get(slot)) or desired is None:
             self._slot_pending[slot].clear()
         else:
-            if desired is not None and desired in all_tpls:
-                tpl = all_tpls[desired]
-                self._slot_bands[slot] = [
-                    (tpl["bands"][b][0], tpl["gain"][b - 1]) for b in range(1, 6)
-                ]
-            if desired is not None and desired != self._device_templates.get(slot):
-                self._slot_pending[slot] = {1, 2, 3, 4, 5}
-            else:
-                self._slot_pending[slot].clear()
+            self._slot_pending[slot] = {1, 2, 3, 4, 5}
+        self._update_modified(slot)
         if slot == self._selected_slot:
             self._refresh_meter()
         self._update_apply_enabled()
@@ -338,22 +286,8 @@ class EqTemplatesWidget(QGroupBox):
         self._emit_dirty_if_changed()
 
     def _on_reset_templates(self) -> None:
-        slot = self._selected_slot
-        name = self.template_combos[slot].currentData()
-        tpl = self._all_templates().get(name) if name else None
-        if tpl is None:
-            return
-        self._slot_bands[slot] = [
-            (tpl["bands"][b][0], tpl["gain"][b - 1]) for b in range(1, 6)
-        ]
-        self._slot_modified[slot].clear()
-        if name != self._device_templates.get(slot):
-            self._slot_pending[slot] = {1, 2, 3, 4, 5}
-        else:
-            self._slot_pending[slot].clear()
-        self._refresh_meter()
-        self._update_apply_enabled()
-        self._emit_dirty_if_changed()
+        if self._reference(self._selected_slot) is not None:
+            self._on_template_combo_changed(self._selected_slot)
 
     def _on_delete_template_for_slot(self, slot: int) -> None:
         name = self.template_combos[slot].currentData()
@@ -375,9 +309,11 @@ class EqTemplatesWidget(QGroupBox):
         affected_slots = [
             s for s, c in self.template_combos.items() if c.currentData() == name
         ]
-        all_names = sorted(self._all_templates(), key=str.casefold)
-        fallback = all_names[0] if all_names else ""
-        self._refresh_combos(select={s: fallback for s in affected_slots})
+        # Those slots show what the base holds again, not the first template:
+        # a Sync would otherwise rename the device's slot.
+        for s in affected_slots:
+            self._slot_pending[s].clear()
+        self._rematch()
         for s in affected_slots:
             self._on_template_combo_changed(s)
         self._update_apply_enabled()
@@ -415,16 +351,7 @@ class EqTemplatesWidget(QGroupBox):
         QApplication.processEvents()
         try:
             gain = [g for (_freq, g) in bands]
-            prev_name = self.template_combos[slot].currentData()
-            device = self._slot_device.get(slot)
-            if prev_name == self.ON_DEVICE and device is not None:
-                bw_source = device["bands"]
-            else:
-                bw_source = self._all_templates().get(prev_name, _EQ_TEMPLATES["MEDIA"])["bands"]
-            new_bands = {
-                b: (bands[b - 1][0], 0 if b in (1, 5) else bw_source[b][1])
-                for b in range(1, 6)
-            }
+            new_bands = self._device_bands(slot)
             # Device first: a write it refuses leaves library, disk and combos
             # untouched instead of holding a preset that can never be pushed.
             with self._device_lock:
@@ -440,15 +367,13 @@ class EqTemplatesWidget(QGroupBox):
             QMessageBox.warning(self, t("err_title"),
                                 t("err_template_apply", error=repr(e) if not str(e) else e))
             return
-        self._device_templates[slot] = name
+        self._slot_device[slot] = {"name": name, "gain": gain, "bands": new_bands}
         self._slot_pending[slot].clear()
         self._user_templates[name] = {"gain": list(gain), "bands": new_bands}
-        if is_new:
-            self._refresh_combos(select={slot: name})
         # Only this slot changed on the device: a global reload would drop the
         # other slots' unsynced edits and forget the device's active slot.
+        self._rematch()
         self._show_new_values(name, skip=slot)
-        self._slot_modified[slot] = set()
         QApplication.restoreOverrideCursor()
         btn.setText(t(idle_key))
         self._refresh_meter()
@@ -541,13 +466,12 @@ class EqTemplatesWidget(QGroupBox):
                 _save_user_templates(self._user_templates)
             except OSError as e:
                 QMessageBox.warning(self, t("err_title"), t("err_template_save", error=e))
-            self._refresh_combos()
+            self._rematch()
             for name in overwritten:
                 self._show_new_values(name)
-            if overwritten:
-                self._refresh_meter()
-                self._update_apply_enabled()
-                self._emit_dirty_if_changed()
+            self._refresh_meter()
+            self._update_apply_enabled()
+            self._emit_dirty_if_changed()
         return imported
 
     def load_into_selected_slot(self, name: str) -> None:
@@ -601,13 +525,9 @@ class EqTemplatesWidget(QGroupBox):
             if s == skip or combo.currentData() != name or not self._slot_bands[s]:
                 continue
             if not self._slot_pending[s]:
-                self._slot_bands[s] = [
-                    (tpl["bands"][b][0], tpl["gain"][b - 1]) for b in range(1, 6)
-                ]
+                self._slot_bands[s] = _values(tpl)
                 self._slot_pending[s] = {1, 2, 3, 4, 5}
-            self._slot_modified[s] = {
-                b for b in range(1, 6) if self._is_band_off_template(s, b)
-            }
+            self._update_modified(s)
 
     def _refresh_combos(self, select: dict[int, str] | None = None) -> None:
         select = select or {}
@@ -685,19 +605,61 @@ class EqTemplatesWidget(QGroupBox):
                 return name
         return None
 
+    def _reference(self, slot: int) -> dict | None:
+        """What the slot is compared with, reset to and synced as: the template
+        its combo shows, or for "<name> (on the base)" the base's own values.
+        Every path goes through here, so a new kind of entry is handled once."""
+        name = self.template_combos[slot].currentData()
+        if name == self.ON_DEVICE:
+            return self._slot_device.get(slot)
+        return self._all_templates().get(name)
+
+    def _reference_name(self, slot: int) -> str:
+        """The name a Sync writes to the slot."""
+        name = self.template_combos[slot].currentData()
+        if name == self.ON_DEVICE:
+            return (self._slot_device.get(slot) or {}).get("name", "")
+        return name or ""
+
+    def _device_bands(self, slot: int) -> dict:
+        """The slot's visible bands with the reference's bandwidths (the meter
+        edits gains and frequencies only), as written to the device."""
+        ref = self._reference(slot) or _EQ_TEMPLATES["MEDIA"]
+        bands = self._slot_bands[slot]
+        return {b: (bands[b - 1][0], 0 if b in (1, 5) else ref["bands"][b][1])
+                for b in range(1, 6)}
+
+    def _rematch(self) -> None:
+        """Match what each slot holds on the base against the library again,
+        without reading the device: after a reload, a sync, or a library change.
+        A slot without unsynced edits shows the template it holds, else its
+        name's template, else "<name> (on the base)"; a slot with edits keeps
+        the reference it shows."""
+        select = {}
+        for slot, data in self._slot_device.items():
+            self._device_templates[slot] = self._match_template(data) if data else None
+            if data is None or self._slot_pending[slot]:
+                continue
+            target = self._device_templates[slot]
+            if target is None:
+                target = data["name"] if data["name"] in self._all_templates() else self.ON_DEVICE
+            select[slot] = target
+        self._refresh_combos(select=select)
+        for slot in self.template_combos:
+            self._update_modified(slot)
+
+    def _update_modified(self, slot: int) -> None:
+        self._slot_modified[slot] = {
+            b for b in range(1, 6) if self._is_band_off_template(slot, b)
+        }
+
     def _is_band_off_template(self, slot: int, band: int) -> bool:
-        combo = self.template_combos[slot]
-        name = combo.currentData()
-        all_tpls = self._all_templates()
-        if name == self.ON_DEVICE and self._slot_device.get(slot) is not None:
-            ref = self._slot_device[slot]  # the base's own values
-        elif name is None or name not in all_tpls:
-            return True
-        else:
-            ref = all_tpls[name]
         bands = self._slot_bands[slot]
         if not bands:
             return False
+        ref = self._reference(slot)
+        if ref is None:
+            return True
         freq, gain = bands[band - 1]
         ref_freq, _ref_bw = ref["bands"][band]
         return gain != ref["gain"][band - 1] or freq != ref_freq
