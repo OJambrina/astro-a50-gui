@@ -1092,8 +1092,7 @@ class MenuSlotsTest(unittest.TestCase):
 
     def _window(self):
         window = mock.MagicMock()
-        window._dirty = False
-        window.eq.has_pending.return_value = False
+        window._has_unsynced.return_value = False
         window._lang_actions = {c: mock.MagicMock() for c in ("auto", "en", "es", "fr")}
         window._theme_actions = {n: mock.MagicMock() for n in ("auto", "dark", "light")}
         window._save_setting = lambda key, value: gui.A50Window._save_setting(window, key, value)
@@ -1837,28 +1836,78 @@ class SweepRegressionTest(unittest.TestCase):
             gui.A50Window._on_save(window)
         window.device.set_default_balance.assert_called_once_with(200)
 
-    def test_sync_turns_back_to_synced_once_eq_edits_are_undone(self):
-        # Issue #22: an EQ edit undone with Reset left Sync orange.
+    @staticmethod
+    def _settings_window():
+        """A window whose settings controls hold real values."""
+        class Control:
+            def __init__(self, value):
+                self.v = value
+
+            def value(self):
+                return self.v
+
+            currentData = value
+
+            def isEnabled(self):
+                return True
+
         window = mock.MagicMock()
         window._loading = False
-        window._dirty = False
+        window.sld_balance, window.cmb_gate, window.sld_alert = Control(128), Control(1), Control(50)
+        window.slider_widgets = {"MIC": (Control(40), mock.MagicMock())}
         window._SYNC_STYLE_DIRTY = gui.A50Window._SYNC_STYLE_DIRTY
         window._SYNC_STYLE_SYNCED = gui.A50Window._SYNC_STYLE_SYNCED
-        window._apply_sync_style = lambda: gui.A50Window._apply_sync_style(window)
-        window._mark_dirty = lambda: gui.A50Window._mark_dirty(window)
+        for name in ("_controls", "_has_unsynced", "_apply_sync_style"):
+            setattr(window, name, getattr(gui.A50Window, name).__get__(window))
+        window.eq.has_pending.return_value = False
+        window._synced = window._controls()
+        return window
+
+    def _assert_sync(self, window, orange):
+        style = gui.A50Window._SYNC_STYLE_DIRTY if orange else gui.A50Window._SYNC_STYLE_SYNCED
+        window.btn_save.setStyleSheet.assert_called_with(style)
+        # In sync, the greyed button can't be pressed either.
+        window.btn_save.setEnabled.assert_called_with(orange)
+
+    def test_sync_turns_back_to_synced_once_eq_edits_are_undone(self):
+        # Issue #22: an EQ edit undone with Reset left Sync orange.
+        window = self._settings_window()
         window.eq.has_pending.return_value = True
         gui.A50Window._on_eq_dirty_changed(window, True)
-        window.btn_save.setStyleSheet.assert_called_with(gui.A50Window._SYNC_STYLE_DIRTY)
-        window.btn_save.setEnabled.assert_called_with(True)
+        self._assert_sync(window, orange=True)
         window.eq.has_pending.return_value = False  # Reset: nothing left to sync
         gui.A50Window._on_eq_dirty_changed(window, False)
-        window.btn_save.setStyleSheet.assert_called_with(gui.A50Window._SYNC_STYLE_SYNCED)
-        # Nothing to sync: the greyed button can't be pressed either.
-        window.btn_save.setEnabled.assert_called_with(False)
-        # A change of the window's own settings still keeps it orange.
-        gui.A50Window._mark_dirty(window)
+        self._assert_sync(window, orange=False)
+
+    def test_sync_turns_back_to_synced_once_a_setting_is_moved_back(self):
+        window = self._settings_window()
+        window.slider_widgets["MIC"][0].v = 60
+        gui.A50Window._settings_changed(window)
+        self._assert_sync(window, orange=True)
+        # An EQ change undone meanwhile doesn't hide the slider's.
         gui.A50Window._on_eq_dirty_changed(window, False)
-        window.btn_save.setStyleSheet.assert_called_with(gui.A50Window._SYNC_STYLE_DIRTY)
+        self._assert_sync(window, orange=True)
+        window.slider_widgets["MIC"][0].v = 40
+        gui.A50Window._settings_changed(window)
+        self._assert_sync(window, orange=False)
+        window.sld_balance.v = 130
+        gui.A50Window._settings_changed(window)
+        self._assert_sync(window, orange=True)
+        window.sld_balance.v = 128
+        gui.A50Window._settings_changed(window)
+        self._assert_sync(window, orange=False)
+
+    def test_failed_sync_keeps_the_settings_to_sync(self):
+        window = self._settings_window()
+        window.sld_alert.v = 70
+        window.device.save_values.side_effect = OSError("unplugged")
+        with mock.patch.object(gui, "QApplication"), mock.patch.object(gui, "QMessageBox"):
+            gui.A50Window._on_save(window)
+        self._assert_sync(window, orange=True)
+        window.device.save_values.side_effect = None
+        with mock.patch.object(gui, "QApplication"):
+            gui.A50Window._on_save(window)
+        self._assert_sync(window, orange=False)
 
     def test_sync_button_keeps_its_height_in_both_states(self):
         # A 1px border in one style only made the whole window shift by 2px
@@ -1878,7 +1927,7 @@ class SweepRegressionTest(unittest.TestCase):
         window._loading = False
         gui.A50Window._on_gate_changed(window, 0)
         window.statusBar.return_value.showMessage.assert_not_called()
-        window._mark_dirty.assert_called_once()
+        window._settings_changed.assert_called_once()
 
     def test_apps_dir_follows_xdg_data_home(self):
         import importlib

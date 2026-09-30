@@ -124,7 +124,9 @@ class A50Window(QMainWindow):
         super().__init__()
         self.device = device
         self._loading = False
-        self._dirty = False
+        # The settings controls' values as last read from or written to the
+        # device: Sync is due while they differ (see _controls).
+        self._synced: dict = {}
         self._loaded_balance: int | None = None
         # The device is shared between the main UI thread, the EQ widget,
         # and the status worker thread; the lock serialises USB HID access.
@@ -384,7 +386,7 @@ class A50Window(QMainWindow):
         if not needs_restart(code):
             return  # already running in that language (A50_LANG, declined restart...)
         msg = t("dlg_restart_msg")
-        if self._dirty or self.eq.has_pending():
+        if self._has_unsynced():
             msg += "\n\n" + t("dlg_restart_unsaved")
         reply = QMessageBox.question(self, t("dlg_restart_title"), msg)
         if reply == QMessageBox.StandardButton.Yes:
@@ -480,9 +482,7 @@ class A50Window(QMainWindow):
     def _apply_sync_style(self):
         if not hasattr(self, "btn_save"):
             return
-        # _dirty covers the window's own settings; the EQ widget knows its own
-        # pending edits, so undoing them (Reset) turns Sync back (issue #22).
-        dirty = self._dirty or self.eq.has_pending()
+        dirty = self._has_unsynced()
         # In sync, the greyed button is also disabled: nothing to write.
         self.btn_save.setEnabled(dirty)
         if dirty:
@@ -492,11 +492,27 @@ class A50Window(QMainWindow):
             self.btn_save.setText(t("btn_save_synced"))
             self.btn_save.setStyleSheet(self._SYNC_STYLE_SYNCED)
 
-    def _mark_dirty(self):
-        if self._loading or self._dirty:
-            return
-        self._dirty = True
-        self._apply_sync_style()
+    def _controls(self) -> dict:
+        """Each enabled settings control's value (a failed read disables it)."""
+        values = {}
+        for key, control in (("balance", self.sld_balance), ("alert", self.sld_alert)):
+            if control.isEnabled():
+                values[key] = control.value()
+        if self.cmb_gate.isEnabled():
+            values["gate"] = self.cmb_gate.currentData()
+        for st, (sld, _lbl) in self.slider_widgets.items():
+            if sld.isEnabled():
+                values[st] = sld.value()
+        return values
+
+    def _has_unsynced(self) -> bool:
+        """A setting differs from the device's, or the EQ has pending edits:
+        moving a control back, or Reset on the EQ, turns Sync back (issue #22)."""
+        return self._controls() != self._synced or self.eq.has_pending()
+
+    def _settings_changed(self):
+        if not self._loading:
+            self._apply_sync_style()
 
     def reload_all(self):
         self._loading = True
@@ -548,7 +564,7 @@ class A50Window(QMainWindow):
             self.statusBar().showMessage(t("msg_loaded"), 2000)
         finally:
             self._loading = False
-        self._dirty = False
+        self._synced = self._controls()
         self._apply_sync_style()
 
     def _on_eq_dirty_changed(self, _is_dirty: bool):
@@ -603,26 +619,26 @@ class A50Window(QMainWindow):
         self.lbl_balance.setText(f"{value}/255")
         if self._loading:
             return
-        self._mark_dirty()
+        self._settings_changed()
 
     def _on_gate_changed(self, _):
         if self._loading:
             return
         if self.cmb_gate.currentData() is None:
             return
-        self._mark_dirty()
+        self._settings_changed()
 
     def _on_alert_changed(self, value: int):
         self.lbl_alert.setText(f"{value}%")
         if self._loading:
             return
-        self._mark_dirty()
+        self._settings_changed()
 
     def _on_slider_changed(self, slider_type, value: int, lbl: QLabel):
         lbl.setText(f"{value}%")
         if self._loading:
             return
-        self._mark_dirty()
+        self._settings_changed()
 
     def _on_save(self):
         """Push the whole UI state to the device and persist with save_values()."""
@@ -652,7 +668,7 @@ class A50Window(QMainWindow):
                 # 2. EQ template assignments + active-slot radio
                 self.eq.push_pending_to_device()
                 self.device.save_values()
-            self._dirty = False
+            self._synced = self._controls()
             self.statusBar().showMessage(t("msg_saved"), 3000)
         except Exception as e:
             QMessageBox.warning(self, t("err_title"), t("err_save", error=e))
