@@ -1,7 +1,7 @@
 # Maintainer: manuacl <manu dot acl at gmail dot com>
 
 pkgname=astro-a50-gui
-pkgver=0.6.0
+pkgver=0.6.1
 pkgrel=1
 pkgdesc="Qt GUI to configure the Astro A50 Gen 4 wireless headset (EQ, balance, mic, noise gate)"
 arch=('any')
@@ -9,7 +9,7 @@ url="https://github.com/manuacl/astro-a50-gui"
 license=('GPL-3.0-or-later' 'MIT')
 depends=('python' 'python-pyqt6' 'python-pyusb')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('28a1e7e4be282aa728439fdd28bb3f2ad51754b21d86f9e03f591f3ba3b181c0')
+sha256sums=('5a1bc0aab6a1e7dac4ef662ff6d30be983c97522e79fac7f2876a51abed5ff4d')
 
 check() {
   cd "$pkgname-$pkgver"
