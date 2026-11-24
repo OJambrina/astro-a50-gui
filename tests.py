@@ -324,9 +324,11 @@ class EqWidgetHasPendingTest(unittest.TestCase):
         widget = EqTemplatesWidget.__new__(EqTemplatesWidget)
         widget._slot_bw_edits = {1: {}, 2: {}, 3: {}}
         widget._slot_device = {1: None, 2: None, 3: None}
+        widget._slot_live = {1: None, 2: None, 3: None}
         widget._slot_pending = slot_pending or {1: set(), 2: set(), 3: set()}
         widget._selected_slot = selected_slot
         widget._device_active_eq = device_active
+        widget._live_active_eq = device_active
         return widget
 
     def test_clean_state(self):
@@ -357,6 +359,7 @@ class EqWidgetMatchTemplateTest(unittest.TestCase):
         widget = EqTemplatesWidget.__new__(EqTemplatesWidget)
         widget._slot_bw_edits = {1: {}, 2: {}, 3: {}}
         widget._slot_device = {1: None, 2: None, 3: None}
+        widget._slot_live = {1: None, 2: None, 3: None}
         widget._user_templates = user_templates or {}
         return widget
 
@@ -510,6 +513,7 @@ class EqWidgetPushPendingTest(unittest.TestCase):
         widget = EqTemplatesWidget.__new__(EqTemplatesWidget)
         widget._slot_bw_edits = {1: {}, 2: {}, 3: {}}
         widget._slot_device = {1: None, 2: None, 3: None}
+        widget._slot_live = {1: None, 2: None, 3: None}
         widget._user_templates = user_templates or {}
         widget._device_templates = device_templates or {1: None, 2: None, 3: None}
         widget._slot_bands = slot_bands or {1: [], 2: [], 3: []}
@@ -517,6 +521,7 @@ class EqWidgetPushPendingTest(unittest.TestCase):
         widget._slot_pending = slot_pending or {1: set(), 2: set(), 3: set()}
         widget._selected_slot = selected_slot
         widget._device_active_eq = device_active
+        widget._live_active_eq = device_active
         widget._last_dirty = False
         widget._refresh_meter = lambda: None
         widget._update_apply_enabled = lambda: None
@@ -685,6 +690,7 @@ def _reload_widget(device_data: dict[int, dict | None], *, user_templates: dict 
     widget = EqTemplatesWidget.__new__(EqTemplatesWidget)
     widget._slot_bw_edits = {1: {}, 2: {}, 3: {}}
     widget._slot_device = {1: None, 2: None, 3: None}
+    widget._slot_live = {1: None, 2: None, 3: None}
     widget._user_templates = user_templates or {}
     widget._device_templates = {1: None, 2: None, 3: None}
     widget._slot_bands = {1: [], 2: [], 3: []}
@@ -692,6 +698,7 @@ def _reload_widget(device_data: dict[int, dict | None], *, user_templates: dict 
     widget._slot_pending = {1: set(), 2: set(), 3: set()}
     widget._selected_slot = 1
     widget._device_active_eq = None
+    widget._live_active_eq = None
     widget._last_dirty = False
     widget._loading = False
     widget._refresh_meter = lambda: None
@@ -1014,6 +1021,7 @@ class EqWidgetHandlersTest(unittest.TestCase):
         widget = EqTemplatesWidget.__new__(EqTemplatesWidget)
         widget._slot_bw_edits = {1: {}, 2: {}, 3: {}}
         widget._slot_device = {1: None, 2: None, 3: None}
+        widget._slot_live = {1: None, 2: None, 3: None}
         widget._user_templates = user_templates or {}
         widget._device_templates = {1: device_template, 2: None, 3: None}
         widget._slot_bands = {
@@ -1026,6 +1034,7 @@ class EqWidgetHandlersTest(unittest.TestCase):
         widget._slot_pending = {1: set(), 2: set(), 3: set()}
         widget._selected_slot = selected_slot
         widget._device_active_eq = selected_slot
+        widget._live_active_eq = selected_slot
         widget._last_dirty = False
         widget._loading = False
         widget._refresh_meter = lambda: None
@@ -1103,6 +1112,7 @@ class EqWidgetPersistAndPushTest(unittest.TestCase):
         widget = EqTemplatesWidget.__new__(EqTemplatesWidget)
         widget._slot_bw_edits = {1: {}, 2: {}, 3: {}}
         widget._slot_device = {1: None, 2: None, 3: None}
+        widget._slot_live = {1: None, 2: None, 3: None}
         widget._user_templates = dict(user_templates or {})
         widget._device_templates = {1: combo_data, 2: None, 3: None}
         widget._slot_bands = {
@@ -1115,6 +1125,7 @@ class EqWidgetPersistAndPushTest(unittest.TestCase):
         widget._slot_pending = {1: {3}, 2: set(), 3: set()}
         widget._selected_slot = 1
         widget._device_active_eq = 1
+        widget._live_active_eq = 1
         widget._last_dirty = True
         widget._loading = False
         widget._device_lock = _threading.RLock()
@@ -2121,7 +2132,8 @@ class SweepRegressionTest(unittest.TestCase):
         window = self._window(get_balance=113)
         window.sld_balance = Slider()
         window.cmb_gate.findData.return_value = 0
-        window._controls = gui.A50Window._controls.__get__(window)
+        for name in ("_controls", "_read_saved", "_write_live", "_write_control"):
+            setattr(window, name, getattr(gui.A50Window, name).__get__(window))
 
         def sync():
             with mock.patch.object(gui, "QApplication"):
@@ -2623,7 +2635,10 @@ class FollowHeadsetTest(unittest.TestCase):
         window._loading = False
         window.sld_balance = self._Slider(game)
         window._synced = {"balance": game}
+        window._applied = {"balance": game}
         window._live_balance = live
+        window._live_timer.isActive.return_value = False
+        window.eq.has_live_changes.return_value = False
         return window
 
     def test_balance_follows_the_headset_buttons(self):
@@ -2678,6 +2693,7 @@ class FollowHeadsetTest(unittest.TestCase):
         widget._loading = False
         widget._selected_slot = selected
         widget._device_active_eq = device_active
+        widget._live_active_eq = device_active
         widget.template_radios = {slot: _MockRadio() for slot in (1, 2, 3)}
         widget._refresh_meter = mock.MagicMock()
         widget._update_apply_enabled = mock.MagicMock()
@@ -2692,11 +2708,14 @@ class FollowHeadsetTest(unittest.TestCase):
         widget._refresh_meter.assert_called_once()
         self.assertFalse(widget._loading)
 
-    def test_unsynced_radio_is_left_alone(self):
-        widget = self._eq(selected=2, device_active=1)  # the user picked slot 2
+    def test_the_buttons_win_over_an_unsaved_radio(self):
+        # Live mode played the slot the user picked, 2; it isn't saved (1).
+        widget = self._eq(selected=2, device_active=1)
+        widget._live_active_eq = 2
         widget.follow_active_eq(3)
-        self.assertFalse(widget.template_radios[3].checked)
-        self.assertEqual((widget._selected_slot, widget._device_active_eq), (2, 1))
+        self.assertTrue(widget.template_radios[3].checked)
+        self.assertEqual((widget._selected_slot, widget._live_active_eq), (3, 3))
+        self.assertEqual(widget._device_active_eq, 1)  # still to be saved
 
     def test_unread_or_failed_active_eq_changes_nothing(self):
         for device_active, active in ((None, 3), (1, None), (1, 1)):
@@ -2705,6 +2724,144 @@ class FollowHeadsetTest(unittest.TestCase):
                 widget.follow_active_eq(active)
                 widget._refresh_meter.assert_not_called()
                 self.assertEqual(widget._device_active_eq, device_active)
+
+
+class LiveModeTest(unittest.TestCase):
+    """Live mode, like Command Center: a change plays on the headset at once
+    and Sync saves it; Refresh puts the saved values back (issue #16)."""
+
+    class _Control:
+        def __init__(self, value):
+            self.v = value
+
+        def value(self):
+            return self.v
+
+        def setValue(self, value):
+            self.v = value
+
+        def isEnabled(self):
+            return True
+
+    def _window(self, applied, shown):
+        window = mock.MagicMock()
+        window._loading = False
+        window._applied = dict(applied)
+        window._controls.return_value = dict(shown)
+        for name in ("_write_live", "_write_control"):
+            setattr(window, name, getattr(gui.A50Window, name).__get__(window))
+        return window
+
+    def test_a_change_waits_for_the_control_to_be_still(self):
+        window = mock.MagicMock()
+        window._loading = False
+        gui.A50Window._settings_changed(window)
+        window._live_timer.start.assert_called_once_with()
+        window._loading = True  # a reload sets the controls: nothing to play
+        gui.A50Window._settings_changed(window)
+        window._live_timer.start.assert_called_once_with()
+
+    def test_only_what_the_headset_does_not_play_yet_is_written(self):
+        window = self._window(
+            applied={"balance": 50, "alert": 30, "gate": "home"},
+            shown={"balance": 80, "alert": 30, "gate": "night"},
+        )
+        gui.A50Window._apply_live(window)
+        window.device.set_default_balance.assert_called_once_with(gui.balance_from_game_percent(80))
+        window.device.set_noise_gate_mode.assert_called_once_with("night")
+        window.device.set_alert_volume.assert_not_called()
+        window.device.save_values.assert_not_called()  # played, not saved
+        window.eq.apply_live_under_lock.assert_called_once_with()
+        self.assertEqual(window._applied, {"balance": 80, "alert": 30, "gate": "night"})
+
+    def test_a_failed_live_write_is_reported_not_raised(self):
+        window = self._window(applied={"alert": 30}, shown={"alert": 60})
+        window.device.set_alert_volume.side_effect = OSError("gone")
+        gui.A50Window._apply_live(window)
+        window.statusBar.return_value.showMessage.assert_called_once()
+        self.assertEqual(window._applied, {"alert": 30})  # retried next time
+
+    def test_sync_writes_what_is_still_waiting_then_saves(self):
+        window = self._window(applied={"alert": 30}, shown={"alert": 60})
+        window._synced = {"alert": 30}
+        with mock.patch.object(gui, "QApplication"):
+            gui.A50Window._on_save(window)
+        window.device.set_alert_volume.assert_called_once_with(60)
+        window.device.save_values.assert_called_once_with()
+        self.assertEqual(window._synced, {"alert": 60})
+
+    def test_refresh_puts_the_saved_values_back_first(self):
+        window = self._window(applied={"alert": 60, "balance": 50}, shown={})
+        window._synced = {"alert": 30, "balance": 50}
+        window._has_unsynced.return_value = True
+        gui.A50Window._on_refresh(window)
+        window.device.set_alert_volume.assert_called_once_with(30)
+        window.device.set_default_balance.assert_not_called()
+        window.eq.restore_saved_under_lock.assert_called_once_with()
+        window.reload_all.assert_called_once_with()
+
+    def test_refresh_without_unsaved_changes_only_reloads(self):
+        window = self._window(applied={"alert": 30}, shown={})
+        window._synced = {"alert": 30}
+        window._has_unsynced.return_value = False
+        gui.A50Window._on_refresh(window)
+        window.device.set_alert_volume.assert_not_called()
+        window.eq.restore_saved_under_lock.assert_not_called()
+        window.reload_all.assert_called_once_with()
+
+    def test_saved_values_are_what_sync_compares_with(self):
+        window = mock.MagicMock()
+        window.slider_widgets = {}
+        window.device.get_alert_volume.side_effect = lambda saved=False: 0 if saved else 50
+        window.device.get_default_balance.side_effect = lambda saved=False: 255 if saved else 0
+        saved = gui.A50Window._read_saved(window, 0)
+        self.assertEqual(saved["alert"], 0)
+        self.assertEqual(saved["balance"], 100)  # live mode moved the default
+        # The headset buttons moved the live balance away from the default:
+        # that isn't for Sync to save, so there's no saved balance to compare.
+        self.assertNotIn("balance", gui.A50Window._read_saved(window, 128))
+
+    def test_eq_edits_are_played_once_a_poll_finds_them(self):
+        window = mock.MagicMock()
+        window._poll_pending = True
+        window._live_timer.isActive.return_value = False
+        window.eq.has_live_changes.return_value = True
+        gui.A50Window._on_live_values(window, None, None)
+        window._live_timer.start.assert_called_once_with()
+
+    def _eq(self, live, shown, saved, selected=1, live_active=1, saved_active=1):
+        widget = EqTemplatesWidget.__new__(EqTemplatesWidget)
+        widget.template_combos = {1: None, 2: None, 3: None}
+        widget._slot_live = dict(live)
+        widget._shown_state = lambda slot: shown[slot]
+        widget._saved_state = lambda slot: saved[slot]
+        widget._selected_slot = selected
+        widget._live_active_eq = live_active
+        widget._device_active_eq = saved_active
+        widget.device = mock.MagicMock()
+        return widget
+
+    def test_eq_plays_the_edited_slots_and_the_radio_picked(self):
+        a, b = {"name": "A", "gain": [0] * 5, "bands": {}}, {"name": "B", "gain": [1] * 5, "bands": {}}
+        widget = self._eq(live={1: a, 2: a, 3: a}, shown={1: a, 2: b, 3: None}, saved={},
+                          selected=2)
+        self.assertTrue(widget.has_live_changes())
+        widget.apply_live_under_lock()
+        widget.device.set_eq_preset_name.assert_called_once_with(2, "B")
+        widget.device.set_eq_preset_gain.assert_called_once_with(2, [1] * 5)
+        widget.device.set_active_eq_preset.assert_called_once_with(2)
+        widget.device.save_values.assert_not_called()
+        self.assertEqual((widget._slot_live[2], widget._live_active_eq), (b, 2))
+        self.assertFalse(widget.has_live_changes())
+
+    def test_eq_restore_puts_back_the_saved_slots_and_active_slot(self):
+        a, b = {"name": "A", "gain": [0] * 5, "bands": {}}, {"name": "B", "gain": [1] * 5, "bands": {}}
+        widget = self._eq(live={1: a, 2: b, 3: a}, shown={}, saved={1: a, 2: a, 3: None},
+                          selected=2, live_active=2, saved_active=1)
+        widget.restore_saved_under_lock()
+        widget.device.set_eq_preset_name.assert_called_once_with(2, "A")
+        widget.device.set_active_eq_preset.assert_called_once_with(1)
+        self.assertEqual((widget._slot_live[2], widget._live_active_eq), (a, 1))
 
 
 if __name__ == "__main__":

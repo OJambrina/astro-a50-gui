@@ -19,8 +19,10 @@ built on top of the [eh-fifty](https://github.com/tdryer/eh-fifty) library.
   - Update in place (only enabled for user presets)
   - Delete via the trash icon next to the combo
   - Persisted to `$XDG_CONFIG_HOME/astro-a50-gui/user-templates.json`
-- **Batch sync**: every edit is local until you click **Synchroniser le
-  dispositif**. The button turns orange to signal pending changes.
+- **Live mode**, like Astro Command Center: every change plays on the headset
+  at once; **Synchroniser le dispositif** saves it so it survives a power-off
+  (the button is orange while there are unsaved changes), and **Actualiser**
+  puts the saved values back.
 - KDE menu entry installation
 - Base station / headset firmware info dialog
 - Import / export EQ presets as Astro Command Center `.astroeq` files (Tools menu), to move presets between Windows and Linux
@@ -131,7 +133,8 @@ how `_match_template` recognises a slot at reload time. User presets live in
 a JSON library on disk; only their *content* gets pushed to a slot.
 
 - **Radio buttons** (EQ 1/2/3) select which slot the bargraph displays. The
-  selection becomes the device's *active* preset on the next **Synchroniser**.
+  headset plays it at once; it becomes the saved *active* preset on the next
+  **Synchroniser**.
 - **Combo box** assigns a template to a slot. Builtins are immutable
   (headset icon). User presets show a star icon and a trash button which is
   invisible (opacity 0) on builtins.
@@ -142,16 +145,31 @@ a JSON library on disk; only their *content* gets pushed to a slot.
   values. Enabled only when bars are modified.
 - **Avancé…**: set each band's centre frequency (80-15000 Hz) and,
   for bands 2-4, its bandwidth (0.1-3.0; bands 1 and 5 are shelves). Changed
-  bands turn orange and are pushed on the next sync, like a dragged bar.
+  bands turn orange, play at once and are saved on the next sync, like a
+  dragged bar.
 - **Sauvegarder**: update the current user preset in place (only enabled when
   the slot points at a user preset *and* has modified bars). Also writes the
   new state to the device immediately.
 - **Créer un préréglage**: prompt for a new name and store the current bands
   as a new user template, push to device, save.
-- **Synchroniser le dispositif** (action bar): pushes the **visible state**
-  of every pending slot (the bargraph values, edits and all) plus scalar
-  settings and the active-slot radio, then calls `save_values()` so it
-  persists across reboots. Turns orange when there is anything to push.
+- **Synchroniser le dispositif** (action bar): saves what the headset plays.
+  It writes what live mode hasn't played yet, the **visible state** of every
+  pending slot (the bargraph values, edits and all) and the active-slot radio,
+  then calls `save_values()` so it persists across reboots. Turns orange when
+  there is anything unsaved.
+- **Actualiser** (action bar): with unsaved changes, puts the saved values
+  back on the headset first, as power-cycling it would, then reloads.
+
+### Live mode
+
+Each change is written to the headset without `save_values()`, so it plays at
+once and a power-off brings back what was saved. A control has to be still
+for 150 ms before it plays, so a drag doesn't flood the base; EQ edits are
+checked on every status poll and played the same way. Sync compares with the
+values saved on the base (`saved=True` reads), so a change played before a
+restart still shows as unsaved. eh-fifty can't read the *saved* EQ slots or
+active slot, only what plays, so for the EQ the app keeps what it last saved:
+an EQ change played and left unsaved before a restart shows as saved.
 
 ### Sync semantics for modified presets
 

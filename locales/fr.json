@@ -120,6 +120,8 @@
   "msg_saved": "Réglages sauvegardés dans la base",
   "err_title": "Erreur",
   "err_save": "Sauvegarde impossible : {error}",
+  "err_live": "Impossible d'appliquer la modification : {error}",
+  "err_revert": "Impossible de restaurer les valeurs enregistrées : {error}",
   "err_open_title": "Astro A50",
   "err_open": "Impossible d'ouvrir la base A50 :\n{error}\n\nVérifie que la base est branchée en USB et le switch sur PC.",
   "na": "n/a"

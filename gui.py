@@ -125,6 +125,9 @@ class A50Window(QMainWindow):
     # Short enough to follow the headset buttons (balance, active EQ) as
     # they are pressed: those two reads take about 100 ms (see StatusWorker).
     REFRESH_INTERVAL_MS = 250
+    # Live mode plays a change once the control has been still this long, so
+    # a slider being dragged doesn't flood the base.
+    LIVE_DELAY_MS = 150
 
     _SYNC_STYLE_DIRTY = (
         "QPushButton { background-color: #FF9800; color: white; "
@@ -148,6 +151,9 @@ class A50Window(QMainWindow):
         # The settings controls' values as last read from or written to the
         # device: Sync is due while they differ (see _controls).
         self._synced: dict = {}
+        # The same values as the headset plays them: live mode writes a change
+        # at once, and Sync saves it (issue #16).
+        self._applied: dict = {}
         # The live balance as last read: the headset buttons changed it when a
         # poll reads another value (see _on_live_values).
         self._live_balance: int | None = None
@@ -195,6 +201,10 @@ class A50Window(QMainWindow):
         self.refresh_timer = QTimer(self)
         self.refresh_timer.timeout.connect(self._trigger_async_status)
         self.refresh_timer.start(self.REFRESH_INTERVAL_MS)
+        self._live_timer = QTimer(self)
+        self._live_timer.setSingleShot(True)
+        self._live_timer.setInterval(self.LIVE_DELAY_MS)
+        self._live_timer.timeout.connect(self._apply_live)
 
         self.reload_all()
 
@@ -519,7 +529,7 @@ class A50Window(QMainWindow):
     def _build_action_buttons(self):
         row = QHBoxLayout()
         self.btn_refresh = QPushButton(t("btn_refresh"))
-        self.btn_refresh.clicked.connect(self.reload_all)
+        self.btn_refresh.clicked.connect(self._on_refresh)
         row.addWidget(self.btn_refresh)
         row.addStretch(1)
         self.btn_save = QPushButton(t("btn_save"))
@@ -562,6 +572,52 @@ class A50Window(QMainWindow):
     def _settings_changed(self):
         if not self._loading:
             self._apply_sync_style()
+            self._live_timer.start()
+
+    def _apply_live(self):
+        """Live mode, like Command Center: play each change on the headset
+        right away, without saving it; Sync saves it (issue #16)."""
+        try:
+            with self._device_lock:
+                self._write_live()
+        except Exception as e:
+            self.statusBar().showMessage(t("err_live", error=e), 5000)
+
+    def _write_live(self):
+        """Write each control the headset doesn't play as shown yet, and the
+        EQ. Caller must hold the device lock."""
+        self._live_timer.stop()
+        for key, value in self._controls().items():
+            if value is not None and self._applied.get(key) != value:
+                self._write_control(key, value)
+                self._applied[key] = value
+        self.eq.apply_live_under_lock()
+
+    def _write_control(self, key, value):
+        """Caller must hold the device lock."""
+        if key == "balance":
+            self.device.set_default_balance(balance_from_game_percent(value))
+        elif key == "gate":
+            self.device.set_noise_gate_mode(value)
+        elif key == "alert":
+            self.device.set_alert_volume(value)
+        else:
+            self.device.set_slider_value(key, value)
+
+    def _on_refresh(self):
+        """Refresh, which drops unsaved changes like Command Center's Revert:
+        live mode plays them on the headset, so the saved values go back first."""
+        if self._has_unsynced():
+            self._live_timer.stop()
+            try:
+                with self._device_lock:
+                    for key, value in self._synced.items():
+                        if self._applied.get(key) != value:
+                            self._write_control(key, value)
+                    self.eq.restore_saved_under_lock()
+            except Exception as e:
+                QMessageBox.warning(self, t("err_title"), t("err_revert", error=e))
+        self.reload_all()
 
     def reload_all(self):
         self._loading = True
@@ -578,6 +634,7 @@ class A50Window(QMainWindow):
                     st: safe(lambda st=st: self.device.get_slider_value(st))
                     for st in self.slider_widgets
                 }
+                saved = self._read_saved(balance)
 
             # A control whose read failed is disabled, like the sliders below,
             # so Sync never writes a default that was never loaded.
@@ -614,8 +671,30 @@ class A50Window(QMainWindow):
             self.statusBar().showMessage(t("msg_loaded"), 2000)
         finally:
             self._loading = False
-        self._synced = self._controls()
+        self._applied = self._controls()
+        self._synced = {
+            key: value if saved.get(key) is None else saved[key]
+            for key, value in self._applied.items()
+        }
         self._apply_sync_style()
+
+    def _read_saved(self, balance) -> dict:
+        """The values saved on the base (read with saved=True), for Sync to
+        compare with: a change live mode played, even before a restart, shows
+        as unsaved. None where unreadable, or for the balance once the headset
+        buttons moved it away from the default: that isn't for Sync to save.
+        Caller must hold the device lock."""
+        saved = {
+            "gate": safe(lambda: self.device.get_noise_gate_mode(saved=True)),
+            "alert": safe(lambda: self.device.get_alert_volume(saved=True)),
+        }
+        for st in self.slider_widgets:
+            saved[st] = safe(lambda st=st: self.device.get_slider_value(st, saved=True))
+        saved_default = safe(lambda: self.device.get_default_balance(saved=True))
+        if (saved_default is not None and balance is not None
+                and balance == safe(self.device.get_default_balance)):
+            saved["balance"] = game_percent(saved_default)
+        return saved
 
     def _on_eq_dirty_changed(self, _is_dirty: bool):
         if not self._loading:
@@ -655,17 +734,26 @@ class A50Window(QMainWindow):
         self._poll_pending = False
         if balance is not None and balance != self._live_balance:
             self._live_balance = balance
-            if (self.sld_balance.isEnabled()
-                    and self.sld_balance.value() == self._synced.get("balance")):
+            # Unless the slider holds a change live mode hasn't played yet.
+            if (self.sld_balance.isEnabled() and not self._live_timer.isActive()
+                    and self.sld_balance.value() == self._applied.get("balance")):
+                was_saved = self._applied.get("balance") == self._synced.get("balance")
                 game = game_percent(balance)
                 self._loading = True
                 try:
                     self.sld_balance.setValue(game)
                 finally:
                     self._loading = False
-                # Read from the device, like reload_all: nothing for Sync to write.
-                self._synced["balance"] = game
+                # The headset plays it already: nothing for live mode to write,
+                # and nothing for Sync either, unless an unsaved change was there.
+                self._applied["balance"] = game
+                if was_saved:
+                    self._synced["balance"] = game
         self.eq.follow_active_eq(active)
+        # EQ edits are checked here rather than signalled: on every poll, and
+        # played once they have been still for one.
+        if not self._live_timer.isActive() and self.eq.has_live_changes():
+            self._live_timer.start()
         self._apply_sync_style()
 
     def _on_reconnected(self):
@@ -720,31 +808,19 @@ class A50Window(QMainWindow):
         self._settings_changed()
 
     def _on_save(self):
-        """Push the whole UI state to the device and persist with save_values()."""
+        """Sync: save what the headset plays, live mode's changes included,
+        with save_values()."""
         self.btn_save.setEnabled(False)
         self.btn_save.setText(t("btn_save_busy"))
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         QApplication.processEvents()
         try:
             with self._device_lock:
-                # 1. Simple scalar settings (balance, gate, alert, sliders).
-                # The slider shows the live balance (get_balance), which the
-                # headset buttons change; write the default balance only when
-                # the user moved the slider, so Sync never persists a button
-                # adjustment as the power-on default. Compared in percent, so a
+                # Live mode already played each change: write what is still
+                # waiting for it, then the EQ presets, then save it all. Only a
+                # control the headset doesn't play as shown is written, so a
                 # balance of 113 set with the buttons isn't rewritten as 112.
-                game = self.sld_balance.value()
-                if self.sld_balance.isEnabled() and game != self._synced.get("balance"):
-                    self.device.set_default_balance(balance_from_game_percent(game))
-                gate_mode = self.cmb_gate.currentData()
-                if self.cmb_gate.isEnabled() and gate_mode is not None:
-                    self.device.set_noise_gate_mode(gate_mode)
-                if self.sld_alert.isEnabled():
-                    self.device.set_alert_volume(self.sld_alert.value())
-                for st, (sld, _) in self.slider_widgets.items():
-                    if sld.isEnabled():
-                        self.device.set_slider_value(st, sld.value())
-                # 2. EQ template assignments + active-slot radio
+                self._write_live()
                 self.eq.push_pending_to_device()
                 self.device.save_values()
             self._synced = self._controls()
@@ -778,6 +854,10 @@ class A50Window(QMainWindow):
         super().changeEvent(event)
 
     def closeEvent(self, event):
+        # A change still waiting to play is played, not dropped; like every
+        # change live mode played, it stays unsaved.
+        if self._live_timer.isActive():
+            self._apply_live()
         self.refresh_timer.stop()
         self._status_thread.quit()
         self._status_thread.wait(2000)

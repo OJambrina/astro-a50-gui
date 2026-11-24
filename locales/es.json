@@ -120,6 +120,8 @@
   "msg_saved": "Ajustes guardados en la estación base",
   "err_title": "Error",
   "err_save": "No se pudo guardar: {error}",
+  "err_live": "No se pudo aplicar el cambio: {error}",
+  "err_revert": "No se pudieron restaurar los valores guardados: {error}",
   "err_open_title": "Astro A50",
   "err_open": "No se puede abrir la estación base del A50:\n{error}\n\nComprueba que la estación base está conectada por USB y que el interruptor está en PC.",
   "na": "n/d"

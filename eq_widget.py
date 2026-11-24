@@ -17,9 +17,15 @@ Public surface used by the main window:
   slot to the device (auto-saving user presets, leaving builtins untouched).
   Caller must hold ``self._device_lock``.
 - ``follow_active_eq(active_eq_preset)`` — check the slot the headset buttons
-  made active, unless the user picked another one that is still unsynced.
+  made active.
+- ``apply_live_under_lock()`` — live mode: play the visible state on the
+  headset without saving it (Sync saves). Caller must hold the device lock.
+- ``restore_saved_under_lock()`` — put back on the headset what was last saved,
+  dropping what live mode played. Caller must hold the device lock.
 - ``selected_slot`` property — slot index (1..3) of the currently checked radio.
 - ``has_pending() -> bool`` — True if any slot has unsynced changes.
+- ``has_live_changes() -> bool`` — True if the visible state differs from
+  what the headset plays, so ``apply_live_under_lock()`` has something to write.
 - Signal ``dirty_changed(bool)`` — emitted when the global dirty state changes
   (used by the main window to update its sync button style).
 """
@@ -68,6 +74,15 @@ def _bandwidths(preset: dict) -> dict[int, int]:
     return {b: preset["bands"][b][1] for b in astroeq.BANDWIDTH_BANDS}
 
 
+def _written_state(name: str, bands: list[tuple[int, int]], bandwidths: dict[int, int]) -> dict:
+    """A slot as written to the device: its name, gains and `_device_bands`."""
+    return {
+        "name": name,
+        "gain": [g for (_freq, g) in bands],
+        "bands": _device_bands(bands, bandwidths),
+    }
+
+
 def _device_bands(bands: list[tuple[int, int]], bandwidths: dict[int, int]) -> dict:
     """The visible bands as written to the device: their frequencies and the
     slot's bandwidths (`_slot_bandwidths`), 0 for the shelves. The meter edits
@@ -99,10 +114,15 @@ class EqTemplatesWidget(QGroupBox):
         self._slot_modified: dict[int, set[int]] = {1: set(), 2: set(), 3: set()}
         self._slot_pending: dict[int, set[int]] = {1: set(), 2: set(), 3: set()}
         self._slot_device: dict[int, dict | None] = {1: None, 2: None, 3: None}
+        # What each slot plays on the headset in live mode, as written (see
+        # _written_state): its saved values until an edit is played.
+        self._slot_live: dict[int, dict | None] = {1: None, 2: None, 3: None}
         self._selected_slot = 1
-        # Active EQ slot last known to be on the device (so we can detect when
-        # the user picks a different radio and emit dirty accordingly).
+        # Active EQ slot last known to be saved on the device (so we can detect
+        # when the user picks a different radio and emit dirty accordingly)...
         self._device_active_eq: int | None = None
+        # ...and the one the headset plays, which live mode changes at once.
+        self._live_active_eq: int | None = None
         self._last_dirty = False
 
         self.template_combos: dict[int, QComboBox] = {}
@@ -203,8 +223,10 @@ class EqTemplatesWidget(QGroupBox):
                 self._slot_bands[slot] = [] if data is None else _values(data)
                 self._slot_bw_edits[slot] = {}
                 self._slot_pending[slot].clear()
+                self._slot_live[slot] = self._saved_state(slot)
             self._rematch()
             self._device_active_eq = active_eq_preset
+            self._live_active_eq = active_eq_preset
             if active_eq_preset is not None and active_eq_preset in self.template_radios:
                 self.template_radios[active_eq_preset].setChecked(True)
                 self._selected_slot = active_eq_preset
@@ -217,17 +239,21 @@ class EqTemplatesWidget(QGroupBox):
     def follow_active_eq(self, active_eq_preset: int | None) -> None:
         """The headset buttons made another EQ slot active: check its radio.
 
-        Left alone while a radio the user picked is still unsynced, or while
-        the device's active slot was never read. Edited bands stay pending:
-        they belong to their slot, not to the radio."""
-        if (active_eq_preset is None or self._device_active_eq is None
-                or active_eq_preset == self._device_active_eq
-                or active_eq_preset not in self.template_radios
-                or self._selected_slot != self._device_active_eq):
+        Compared with the slot the headset plays: in live mode a radio the
+        user picks is played at once, so only the buttons make them differ.
+        Left alone while the active slot was never read. Edited bands stay
+        pending: they belong to their slot, not to the radio."""
+        if (active_eq_preset is None or self._live_active_eq is None
+                or active_eq_preset == self._live_active_eq
+                or active_eq_preset not in self.template_radios):
             return
         self._loading = True
         try:
-            self._device_active_eq = active_eq_preset
+            # A change made on the headset is not one for Sync to save, unless
+            # the user had picked another radio that is still unsaved.
+            if self._selected_slot == self._device_active_eq:
+                self._device_active_eq = active_eq_preset
+            self._live_active_eq = active_eq_preset
             self.template_radios[active_eq_preset].setChecked(True)
             self._selected_slot = active_eq_preset
             self._refresh_meter()
@@ -235,6 +261,74 @@ class EqTemplatesWidget(QGroupBox):
         finally:
             self._loading = False
         self._emit_dirty_if_changed()
+
+    def has_live_changes(self) -> bool:
+        """The visible state differs from what the headset plays: a slot, or
+        the radio picked. Cheap: no USB, so it can run on every poll."""
+        if (self._live_active_eq is not None
+                and self._selected_slot != self._live_active_eq):
+            return True
+        return any(
+            (state := self._shown_state(slot)) is not None and state != self._slot_live[slot]
+            for slot in self.template_combos
+        )
+
+    def apply_live_under_lock(self) -> None:
+        """Live mode, like Command Center: play on the headset each slot as it
+        is shown, and the radio picked, without saving them (Sync saves).
+        Only what differs from what the headset plays is written.
+
+        Caller must hold ``self._device_lock``."""
+        for slot in self.template_combos:
+            state = self._shown_state(slot)
+            if state is not None and state != self._slot_live[slot]:
+                self._write_slot(slot, state)
+                self._slot_live[slot] = state
+        self._play_active(self._selected_slot)
+
+    def restore_saved_under_lock(self) -> None:
+        """Put back on the headset what was last saved, dropping what live
+        mode played, as power-cycling it would.
+
+        Caller must hold ``self._device_lock``."""
+        for slot in self.template_combos:
+            saved = self._saved_state(slot)
+            if saved is not None and saved != self._slot_live[slot]:
+                self._write_slot(slot, saved)
+                self._slot_live[slot] = saved
+        self._play_active(self._device_active_eq)
+
+    def _play_active(self, slot: int | None) -> None:
+        """Make the headset play this slot, if it isn't already."""
+        if (slot is not None and self._live_active_eq is not None
+                and slot != self._live_active_eq):
+            self.device.set_active_eq_preset(slot)
+            self._live_active_eq = slot
+
+    def _saved_state(self, slot: int) -> dict | None:
+        """The slot's last read or saved values, as written to the device."""
+        device = self._slot_device.get(slot)
+        if device is None:
+            return None
+        return _written_state(device["name"], _values(device), _bandwidths(device))
+
+    def _shown_state(self, slot: int) -> dict | None:
+        """The slot as it is shown, as written to the device: its saved values
+        while nothing is pending."""
+        if not self._slot_pending[slot]:
+            return self._saved_state(slot)
+        bands = self._slot_bands[slot]
+        if not bands:
+            return None
+        name, _ref = self._resolve(slot)
+        return _written_state(name, bands, self._slot_bandwidths(slot))
+
+    def _write_slot(self, slot: int, state: dict) -> None:
+        """Caller must hold ``self._device_lock``."""
+        self.device.set_eq_preset_name(slot, state["name"])
+        self.device.set_eq_preset_gain(slot, state["gain"])
+        for b, (freq, bw) in state["bands"].items():
+            self.device.set_eq_preset_freq_and_bw(slot, b, freq, bw)
 
     def push_pending_to_device(self) -> None:
         """Push the visible state of every pending slot to the device, plus
@@ -257,12 +351,10 @@ class EqTemplatesWidget(QGroupBox):
                 if not bands:
                     continue
                 name, _ref = self._resolve(slot)
-                gain = [g for (_freq, g) in bands]
-                device_bands = _device_bands(bands, self._slot_bandwidths(slot))
-                self.device.set_eq_preset_name(slot, name)
-                self.device.set_eq_preset_gain(slot, gain)
-                for b, (freq, bw) in device_bands.items():
-                    self.device.set_eq_preset_freq_and_bw(slot, b, freq, bw)
+                state = _written_state(name, bands, self._slot_bandwidths(slot))
+                gain, device_bands = state["gain"], state["bands"]
+                self._write_slot(slot, state)
+                self._slot_live[slot] = state
                 # Only once the device took it: a failed write keeps the preset
                 # and its orange marks as they were. Only a slot showing the user
                 # preset redefines it, not the base's own values that happen to
@@ -279,6 +371,7 @@ class EqTemplatesWidget(QGroupBox):
                     and self._selected_slot != self._device_active_eq):
                 self.device.set_active_eq_preset(self._selected_slot)
                 self._device_active_eq = self._selected_slot
+                self._live_active_eq = self._selected_slot
         finally:
             # Presets the device already took are saved even when a later
             # slot fails, so memory and disk never disagree; the slots already
@@ -471,16 +564,14 @@ class EqTemplatesWidget(QGroupBox):
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         QApplication.processEvents()
         try:
-            gain = [g for (_freq, g) in bands]
-            new_bands = _device_bands(bands, self._slot_bandwidths(slot))
+            state = _written_state(name, bands, self._slot_bandwidths(slot))
+            gain, new_bands = state["gain"], state["bands"]
             # Device first: a write it refuses leaves library, disk and combos
             # untouched instead of holding a preset that can never be pushed.
             with self._device_lock:
-                self.device.set_eq_preset_name(slot, name)
-                self.device.set_eq_preset_gain(slot, gain)
-                for b, (freq, bw) in new_bands.items():
-                    self.device.set_eq_preset_freq_and_bw(slot, b, freq, bw)
+                self._write_slot(slot, state)
                 self.device.save_values()
+            self._slot_live[slot] = state
         except Exception as e:
             QApplication.restoreOverrideCursor()
             btn.setText(t(idle_key))

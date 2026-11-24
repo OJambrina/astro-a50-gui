@@ -120,6 +120,8 @@
   "msg_saved": "Settings saved to base station",
   "err_title": "Error",
   "err_save": "Save failed: {error}",
+  "err_live": "Could not apply the change: {error}",
+  "err_revert": "Could not restore the saved values: {error}",
   "err_open_title": "Astro A50",
   "err_open": "Cannot open the A50 base:\n{error}\n\nCheck that the base is plugged in via USB and the switch is on PC.",
   "na": "n/a"
